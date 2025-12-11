@@ -82,52 +82,57 @@ void receive_file(int port) {
 
     // Display server status
     printf("Listening on port %d...\n", port);
-    printf("Waiting for incoming connection...\n");
+    printf("Server started. Waiting for connections...\n");
+    printf("Press Ctrl+C to stop the server\n\n");
 
-    // Step 6: Accept incoming connection
-    // This blocks until a client connects
-    SOCKADDR_IN_T client_addr;         // Structure to hold client address information
+    // Accept connections in a loop to handle multiple file transfers
+    while (1) {
+        printf("Waiting for incoming connection...\n");
 
-    // Platform-specific address length type
+        // Accept incoming connection
+        SOCKADDR_IN_T client_addr;         // Structure to hold client address information
+
+        // Platform-specific address length type
 #ifdef _WIN32
-    int client_addr_len = sizeof(client_addr);      // Windows uses int
+        int client_addr_len = sizeof(client_addr);      // Windows uses int
 #else
-    socklen_t client_addr_len = sizeof(client_addr); // POSIX uses socklen_t
+        socklen_t client_addr_len = sizeof(client_addr); // POSIX uses socklen_t
 #endif
 
-    SOCKET_T client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
-    if (client_socket == INVALID_SOCKET_T) {
-        perror("accept");              // Print system error for accept failure
-        close_socket(server_socket);   // Clean up server socket before exit
-        net_cleanup();                 // Clean up network subsystem
-        exit(EXIT_FAILURE);            // Cannot continue if accept fails
+        SOCKET_T client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
+        if (client_socket == INVALID_SOCKET_T) {
+            perror("accept");              // Print system error for accept failure
+            continue;                     // Continue accepting other connections
+        }
+
+        // Convert client IP address to string for display
+        char client_ip[INET_ADDRSTRLEN];   // Buffer for IP address string (IPv4 max 15 chars + null)
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+        printf("Connection established from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
+
+        // Detect transfer type and receive using appropriate protocol
+        int transfer_type = detect_transfer_type(client_socket);
+        if (transfer_type == -1) {
+            fprintf(stderr, "Error detecting transfer type\n");
+        } else if (transfer_type == 0) {
+            // File transfer
+            if (recv_file_protocol(client_socket) != 0) {
+                fprintf(stderr, "Error receiving file\n");
+            }
+        } else {
+            // Directory transfer
+            if (recv_directory_protocol(client_socket) != 0) {
+                fprintf(stderr, "Error receiving directory\n");
+            }
+        }
+
+        // Close client connection but keep server running
+        close_socket(client_socket);
+        printf("\nTransfer completed. Waiting for next connection...\n");
+        printf("--------------------------------------------------\n");
     }
 
-    // Convert client IP address to string for display
-    // inet_ntop: "Network to Presentation" - converts binary IP to text
-    char client_ip[INET_ADDRSTRLEN];   // Buffer for IP address string (IPv4 max 15 chars + null)
-    inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-    printf("Connection established from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
-
-    // Step 7: Detect transfer type and receive using appropriate protocol
-    int transfer_type = detect_transfer_type(client_socket);
-    if (transfer_type == -1) {
-        fprintf(stderr, "Error detecting transfer type\n");
-    } else if (transfer_type == 0) {
-        // File transfer
-        if (recv_file_protocol(client_socket) != 0) {
-            fprintf(stderr, "Error receiving file\n");
-        }
-    } else {
-        // Directory transfer
-        if (recv_directory_protocol(client_socket) != 0) {
-            fprintf(stderr, "Error receiving directory\n");
-        }
-    }
-    // Note: We continue to cleanup even if reception fails
-
-    // Step 8: Clean up all resources
-    close_socket(client_socket);       // Close client connection
-    close_socket(server_socket);       // Close server listening socket
-    net_cleanup();                     // Clean up network subsystem
+    // This code will never be reached due to infinite loop
+    // close_socket(server_socket);       // Close server listening socket
+    // net_cleanup();                     // Clean up network subsystem
 }

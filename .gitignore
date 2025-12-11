@@ -1,0 +1,173 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Executable
+nettf
+nettf.exe
+
+# Build system files
+*.mk
+*.mak
+*.bld
+*.pro
+
+# Compiled source files
+*.slo
+*.lo
+*.suo
+*.exp
+*.pdb
+*.ilk
+*.map
+*.dSYM/
+*.su
+
+# Debug files
+*.idb
+*.pdb
+*.pch
+*.tmp
+*.temp
+
+# Logs
+*.log
+*.logs
+
+# Temporary files
+*~
+.tmp/
+temp/
+.tmp_files/
+
+# Editor and IDE files
+.vscode/
+.vs/
+.idea/
+*.sublime-*
+*.swp
+*.swo
+*~
+
+# Emacs editor files
+*\#
+.\#*
+*.elc
+
+# Vim editor files
+*.swp
+*.swo
+.*.swp
+.*.swo
+
+# Nano editor files
+*.save
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.copy
+
+# Test files and sample data
+test*
+sample*
+demo*
+*.test
+*.demo
+large_test.dat
+
+# Generated documentation
+docs/generated/
+*.html
+*.pdf
+
+# Configuration files (if they contain sensitive info)
+*.conf
+*.config
+*.settings
+.env
+.env.local
+.env.*.local
+
+# Package files
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.deb
+*.rpm
+*.dmg
+
+# Core dumps
+core
+core.*
+*.core
+
+# Profiling data
+*.prof
+*.gcov
+*.gcda
+*.gcno
+*.profile
+
+# Memory dump files
+*.hprof
+*.dump
+
+# Performance monitoring files
+*.perf
+*.trace
+
+# GitHub specific
+.github/workflows/logs/
+
+# Makefile backup
+Makefile.bak
+Makefile.old
+
+# Build scripts backup
+build.bat.bak
+build.sh.bak
+
+# Build script logs
+*.log
+compile*.log
+link.log

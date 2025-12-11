@@ -15,6 +15,9 @@
 #include <sys/stat.h>   // File status operations (stat() for file size)
 #include <time.h>       // Time functions for transfer speed calculation
 
+// Default port configuration
+#define DEFAULT_NETTF_PORT 9876
+
 // Protocol constants
 #define HEADER_SIZE 16    // Total header size: 8 bytes (file_size) + 8 bytes (filename_len)
 #define DIR_HEADER_SIZE 24 // Directory header: 8 bytes (total_files) + 8 bytes (total_size) + 8 bytes (base_path_len)

@@ -8,10 +8,32 @@
  * and secure filename handling.
  */
 
+#define _GNU_SOURCE  // Enable strdup() on Linux systems
 #include "protocol.h"
 #include <errno.h>  // For error codes (perror functionality)
 #include <dirent.h> // For directory operations
 #include <string.h> // For string manipulation functions
+
+// Define htonll/ntohll for systems that don't have them (like Linux)
+#ifndef htonll
+static inline uint64_t htonll(uint64_t value) {
+    #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        return ((uint64_t)htonl(value & 0xFFFFFFFF) << 32) | htonl(value >> 32);
+    #else
+        return value;
+    #endif
+}
+#endif
+
+#ifndef ntohll
+static inline uint64_t ntohll(uint64_t value) {
+    #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        return ((uint64_t)ntohl(value & 0xFFFFFFFF) << 32) | ntohl(value >> 32);
+    #else
+        return value;
+    #endif
+}
+#endif
 
 /**
  * @brief Send all bytes from a buffer, handling partial sends
