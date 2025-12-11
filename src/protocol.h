@@ -17,7 +17,13 @@
 
 // Protocol constants
 #define HEADER_SIZE 16    // Total header size: 8 bytes (file_size) + 8 bytes (filename_len)
+#define DIR_HEADER_SIZE 24 // Directory header: 8 bytes (total_files) + 8 bytes (total_size) + 8 bytes (base_path_len)
 #define CHUNK_SIZE 4096   // Size of file chunks for transfer (4KB optimal for network efficiency)
+#define MAGIC_SIZE 4      // Size of magic number (4 bytes)
+
+// Magic numbers to distinguish transfer types
+#define FILE_MAGIC 0x46494C45  // "FILE" in hex
+#define DIR_MAGIC  0x44495220  // "DIR " in hex
 
 /**
  * @brief Protocol header structure for file transfer metadata
@@ -34,6 +40,18 @@ typedef struct {
     uint64_t file_size;    // Size of file in bytes (8 bytes, up to 16 exabytes)
     uint64_t filename_len; // Length of filename in bytes (8 bytes, up to 16 exabytes)
 } FileHeader;
+
+/**
+ * @brief Directory header structure for directory transfer metadata
+ *
+ * This structure is transmitted at the beginning of directory transfers.
+ * All fields are converted to network byte order before transmission.
+ */
+typedef struct {
+    uint64_t total_files;   // Total number of files in the directory (8 bytes)
+    uint64_t total_size;    // Total size of all files in bytes (8 bytes)
+    uint64_t base_path_len; // Length of base directory path (8 bytes)
+} DirectoryHeader;
 
 // Function declarations for protocol operations
 
@@ -96,9 +114,54 @@ void send_file_protocol(SOCKET_T s, const char *filepath);
  */
 int recv_file_protocol(SOCKET_T s);
 
+/**
+ * @brief Send a directory using the defined protocol
+ *
+ * This function implements the complete directory sending protocol:
+ * 1. Check if path is a directory
+ * 2. Count total files and calculate total size
+ * 3. Send directory header with metadata
+ * 4. Send base directory path
+ * 5. Recursively send all files with their relative paths
+ *
+ * @param s Socket descriptor
+ * @param dirpath Path to directory to send
+ * @return Does not return on error (exits with EXIT_FAILURE)
+ */
+void send_directory_protocol(SOCKET_T s, const char *dirpath);
+
+/**
+ * @brief Receive a directory using the defined protocol
+ *
+ * This function implements the complete directory receiving protocol:
+ * 1. Receive directory header
+ * 2. Receive base directory path
+ * 3. Create base directory structure
+ * 4. Receive all files and recreate directory structure
+ *
+ * @param s Socket descriptor
+ * @return 0 on success, -1 on error
+ */
+int recv_directory_protocol(SOCKET_T s);
+
 // Helper functions for transfer progress display
 void format_bytes(uint64_t bytes, char *buffer, size_t buffer_size);
 void format_speed(double bytes_per_sec, char *buffer, size_t buffer_size);
 void format_time(int seconds, char *buffer, size_t buffer_size);
+
+// Helper functions for directory operations
+int is_directory(const char *path);
+int count_directory_files(const char *dirpath, uint64_t *total_files, uint64_t *total_size);
+int create_directory_recursive(const char *dirpath);
+void send_single_file_in_dir(SOCKET_T s, const char *base_path, const char *relative_path);
+int receive_single_file_in_dir(SOCKET_T s, const char *base_dir);
+
+/**
+ * @brief Detect transfer type by examining first bytes
+ *
+ * @param s Socket descriptor
+ * @return 0 for file transfer, 1 for directory transfer, -1 on error
+ */
+int detect_transfer_type(SOCKET_T s);
 
 #endif // PROTOCOL_H

@@ -109,11 +109,22 @@ void receive_file(int port) {
     inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
     printf("Connection established from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
 
-    // Step 7: Receive file using the defined protocol
-    if (recv_file_protocol(client_socket) != 0) {
-        fprintf(stderr, "Error receiving file\n");
-        // Note: We continue to cleanup even if file reception fails
+    // Step 7: Detect transfer type and receive using appropriate protocol
+    int transfer_type = detect_transfer_type(client_socket);
+    if (transfer_type == -1) {
+        fprintf(stderr, "Error detecting transfer type\n");
+    } else if (transfer_type == 0) {
+        // File transfer
+        if (recv_file_protocol(client_socket) != 0) {
+            fprintf(stderr, "Error receiving file\n");
+        }
+    } else {
+        // Directory transfer
+        if (recv_directory_protocol(client_socket) != 0) {
+            fprintf(stderr, "Error receiving directory\n");
+        }
     }
+    // Note: We continue to cleanup even if reception fails
 
     // Step 8: Clean up all resources
     close_socket(client_socket);       // Close client connection

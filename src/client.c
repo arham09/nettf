@@ -71,9 +71,22 @@ void send_file(const char *target_ip, int port, const char *filepath) {
         exit(EXIT_FAILURE);            // Cannot continue if connection fails
     }
 
-    // Step 5: Send file using the defined protocol
-    printf("Connected! Sending file: %s\n", filepath);
-    send_file_protocol(client_socket, filepath);
+    // Step 5: Check if path is file or directory and send using appropriate protocol
+    int is_dir = is_directory(filepath);
+    if (is_dir == -1) {
+        fprintf(stderr, "Error: Cannot access path '%s'\n", filepath);
+        close_socket(client_socket);
+        net_cleanup();
+        exit(EXIT_FAILURE);
+    }
+
+    if (is_dir) {
+        printf("Connected! Sending directory: %s\n", filepath);
+        send_directory_protocol(client_socket, filepath);
+    } else {
+        printf("Connected! Sending file: %s\n", filepath);
+        send_file_protocol(client_socket, filepath);
+    }
 
     // Step 6: Clean up resources on successful completion
     close_socket(client_socket);       // Close TCP connection

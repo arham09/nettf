@@ -26,10 +26,11 @@ void receive_file(int port);
 void print_usage(const char *program_name) {
     printf("Usage:\n");
     printf("  %s receive <PORT>\n", program_name);                                 // Receiver mode
-    printf("  %s send <TARGET_IP> <PORT> <FILE_PATH>\n", program_name);             // Sender mode
+    printf("  %s send <TARGET_IP> <PORT> <FILE_OR_DIR_PATH>\n", program_name);     // Sender mode
     printf("\nExamples:\n");
     printf("  %s receive 8080\n", program_name);                                   // Receiver example
-    printf("  %s send 192.168.1.100 8080 /path/to/file.txt\n", program_name);     // Sender example
+    printf("  %s send 192.168.1.100 8080 /path/to/file.txt\n", program_name);     // File transfer example
+    printf("  %s send 192.168.1.100 8080 /path/to/directory/\n", program_name);   // Directory transfer example
 }
 
 /**
