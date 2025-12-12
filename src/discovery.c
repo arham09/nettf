@@ -359,62 +359,154 @@ int ping_sweep(const char *network, const char *netmask, NetworkDevice *devices,
 }
 
 /**
- * @brief Discover all available devices on local network
+ * @brief Test specific IPs for NETTF service (faster than full ping sweep)
  */
-int discover_network_devices(NetworkDevice *devices, int max_devices, int check_services, int timeout_ms) {
-    int arp_count = 0;
+int test_common_ips_for_nettf(NetworkDevice *devices, int max_devices, const char *base_network, int timeout_ms) {
+    int count = 0;
 
-    printf("Discovering network devices from ARP table...\n");
+    printf("Testing common IPs for NETTF service on %s network...\n", base_network);
 
-    // Step 1: Scan ARP table for known devices
-    arp_count = scan_arp_table(devices, max_devices);
-    if (arp_count > 0) {
-        printf("Found %d device(s) in ARP table\n", arp_count);
-    } else {
-        printf("No devices found in ARP table\n");
-        return 0;
-    }
+    // Test common IPs that might have NETTF running
+    const char *common_ips[] = {
+        "1",     // Gateway/Router
+        "10",    // Common server
+        "63",    // User's example (192.168.5.63)
+        "100",   // Common assignment
+        "101",   // Common assignment
+        "105",   // Common assignment
+        "110",   // Common assignment
+        "200",   // Common assignment
+        "254"    // Common server
+    };
+    int num_common = sizeof(common_ips) / sizeof(common_ips[0]);
 
-    // Step 2: Mark all devices as active (they're in ARP table, so they're reachable)
-    for (int i = 0; i < arp_count; i++) {
-        devices[i].is_active = 1;
-        devices[i].response_time = 0;  // Not available without ping
-    }
+    for (int i = 0; i < num_common && count < max_devices; i++) {
+        char test_ip[16];
+        snprintf(test_ip, sizeof(test_ip), "%s.%s", base_network, common_ips[i]);
 
-    // Step 3: Check for NETTF service if requested
-    if (check_services) {
-        printf("Checking for NETTF services...\n");
-        for (int i = 0; i < arp_count; i++) {
-            devices[i].has_nettf_service = check_nettf_service(devices[i].ip_address, DEFAULT_NETTF_PORT, timeout_ms);
-            if (devices[i].has_nettf_service) {
-                printf("  NETTF service found on %s\n", devices[i].ip_address);
-            }
+        // Quick ping test first
+        double response_time;
+        if (ping_device(test_ip, timeout_ms, &response_time)) {
+            strncpy(devices[count].ip_address, test_ip, sizeof(devices[count].ip_address) - 1);
+            devices[count].mac_address[0] = '\0';
+            devices[count].hostname[0] = '\0';
+            devices[count].is_active = 1;
+            devices[count].response_time = response_time;
+            devices[count].has_nettf_service = 0;  // Will be set later
+            count++;
+            printf("  Found active device: %s (%.2f ms)\n", test_ip, response_time);
         }
     }
 
-    return arp_count;
+    return count;
+}
+
+/**
+ * @brief Discover all available devices on local network
+ */
+int discover_network_devices(NetworkDevice *devices, int max_devices, int check_services, int timeout_ms) {
+    (void)check_services; // Parameter kept for compatibility but always checks services now
+    int arp_count = 0;
+    int total_count = 0;
+    NetworkInterface interfaces[16];
+    int interface_count;
+
+    printf("Discovering network devices from ARP table...\n");
+
+    // Step 1: Get network interfaces to determine network range
+    interface_count = get_network_interfaces(interfaces, 16);
+    if (interface_count <= 0) {
+        fprintf(stderr, "Error: Could not get network interfaces\n");
+        return -1;
+    }
+
+    // Step 2: Scan ARP table for known devices
+    arp_count = scan_arp_table(devices, max_devices);
+    if (arp_count > 0) {
+        printf("Found %d device(s) in ARP table\n", arp_count);
+
+        // Step 3: Mark all devices as active (they're in ARP table, so they're reachable)
+        for (int i = 0; i < arp_count; i++) {
+            devices[i].is_active = 1;
+            devices[i].response_time = 0;  // Not available without ping
+        }
+        total_count = arp_count;
+    }
+
+    // Step 4: Test common IPs for potential NETTF services (faster than full ping sweep)
+    for (int i = 0; i < interface_count && total_count < max_devices; i++) {
+        if (interfaces[i].is_active && strstr(interfaces[i].ip_address, "192.168.") != NULL) {
+            // Extract network part (e.g., "192.168.5" from "192.168.5.x")
+            char network_part[13];
+            strncpy(network_part, interfaces[i].ip_address, sizeof(network_part) - 1);
+            char *last_dot = strrchr(network_part, '.');
+            if (last_dot) {
+                *last_dot = '\0';  // Terminate at last dot
+            }
+
+            int additional_count = test_common_ips_for_nettf(
+                &devices[total_count],
+                max_devices - total_count,
+                network_part,
+                timeout_ms
+            );
+
+            if (additional_count > 0) {
+                // Check for duplicates with ARP table entries
+                int unique_count = 0;
+                for (int j = total_count; j < total_count + additional_count && j < max_devices; j++) {
+                    int duplicate = 0;
+                    for (int k = 0; k < arp_count; k++) {
+                        if (strcmp(devices[j].ip_address, devices[k].ip_address) == 0) {
+                            duplicate = 1;
+                            break;
+                        }
+                    }
+                    if (!duplicate) {
+                        // Move unique device to correct position
+                        if (unique_count > 0) {
+                            strcpy(devices[total_count + unique_count].ip_address, devices[j].ip_address);
+                            devices[total_count + unique_count].is_active = devices[j].is_active;
+                            devices[total_count + unique_count].response_time = devices[j].response_time;
+                            devices[total_count + unique_count].mac_address[0] = '\0';
+                            devices[total_count + unique_count].hostname[0] = '\0';
+                        }
+                        unique_count++;
+                    }
+                }
+                total_count += unique_count;
+            }
+            break; // Only scan the first 192.168.x.x interface
+        }
+    }
+
+    // Step 5: Always check for NETTF service on port 9876
+    printf("Checking for NETTF services on port %d...\n", DEFAULT_NETTF_PORT);
+    for (int i = 0; i < total_count; i++) {
+        devices[i].has_nettf_service = check_nettf_service(devices[i].ip_address, DEFAULT_NETTF_PORT, timeout_ms);
+        if (devices[i].has_nettf_service) {
+            printf("  NETTF service available on %s (ready to receive files)\n", devices[i].ip_address);
+        }
+    }
+
+    return total_count;
 }
 
 /**
  * @brief Print discovered devices in a formatted table
  */
 void print_discovered_devices(const NetworkDevice *devices, int num_devices, int show_services) {
+    (void)show_services; // Parameter kept for compatibility but always shows services now
     if (num_devices == 0) {
         printf("No devices discovered.\n");
         return;
     }
 
     printf("\nDiscovered Network Devices:\n");
-    printf("%-16s %-18s %-10s %-10s", "IP Address", "MAC Address", "Status", "Response");
-    if (show_services) {
-        printf(" %-10s", "NETTF");
-    }
+    printf("%-16s %-18s %-10s %-10s %-10s", "IP Address", "MAC Address", "Status", "Response", "NETTF");
     printf("\n");
 
-    printf("%-16s %-18s %-10s %-10s", "------------", "------------------", "------", "--------");
-    if (show_services) {
-        printf(" %-10s", "-----");
-    }
+    printf("%-16s %-18s %-10s %-10s %-10s", "------------", "------------------", "------", "--------", "-----");
     printf("\n");
 
     for (int i = 0; i < num_devices; i++) {
@@ -438,12 +530,11 @@ void print_discovered_devices(const NetworkDevice *devices, int num_devices, int
             printf("%-10s ", "N/A");
         }
 
-        if (show_services) {
-            if (devices[i].has_nettf_service) {
-                printf("%-10s ", "Yes");
-            } else {
-                printf("%-10s ", "No");
-            }
+        // Always show NETTF service status
+        if (devices[i].has_nettf_service) {
+            printf("%-10s ", "Ready");
+        } else {
+            printf("%-10s ", "Closed");
         }
 
         printf("\n");

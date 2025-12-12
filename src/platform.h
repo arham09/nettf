@@ -26,6 +26,7 @@
     // POSIX (Linux/macOS) headers
     #include <sys/socket.h>   // Core socket functions
     #include <netinet/in.h>   // Internet address structures
+    #include <netinet/tcp.h>  // TCP-specific options (TCP_NODELAY)
     #include <arpa/inet.h>    // IP address manipulation functions
     #include <unistd.h>       // Unix standard functions (close)
 

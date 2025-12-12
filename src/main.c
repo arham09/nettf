@@ -27,15 +27,13 @@ void receive_file(int port);
  */
 void print_usage(const char *program_name) {
     printf("Usage:\n");
-    printf("  %s discover [--services] [--timeout <ms>]\n", program_name);         // Discovery mode
+    printf("  %s discover [--timeout <ms>]\n", program_name);                     // Discovery mode
     printf("  %s receive\n", program_name);                                         // Receiver mode
     printf("  %s send <TARGET_IP> <FILE_OR_DIR_PATH>\n", program_name);           // Sender mode
     printf("\nOptions:\n");
-    printf("  --services     Check for NETTF service on discovered devices (slower)\n");
     printf("  --timeout <ms> Set timeout for network operations (default: 1000ms)\n");
     printf("\nExamples:\n");
-    printf("  %s discover\n", program_name);                                       // Basic discovery
-    printf("  %s discover --services\n", program_name);                            // With service check
+    printf("  %s discover\n", program_name);                                       // Discovery with port 9876 check
     printf("  %s receive\n", program_name);                                        // Receiver example
     printf("  %s send 192.168.1.100 /path/to/file.txt\n", program_name);          // File transfer example
     printf("  %s send 192.168.1.100 /path/to/directory/\n", program_name);        // Directory transfer example
@@ -74,14 +72,11 @@ int main(int argc, char *argv[]) {
 
     // Parse command: "discover" mode
     if (strcmp(argv[1], "discover") == 0) {
-        int check_services = 0;
         int timeout_ms = 1000;
 
         // Parse optional arguments
         for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "--services") == 0) {
-                check_services = 1;
-            } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
+            if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
                 timeout_ms = atoi(argv[i + 1]);
                 if (timeout_ms <= 0) {
                     fprintf(stderr, "Error: Timeout must be a positive number\n");
@@ -100,7 +95,7 @@ int main(int argc, char *argv[]) {
 
         // Perform network discovery
         NetworkDevice devices[256];
-        int device_count = discover_network_devices(devices, 256, check_services, timeout_ms);
+        int device_count = discover_network_devices(devices, 256, 1, timeout_ms);
 
         if (device_count < 0) {
             fprintf(stderr, "Error: Network discovery failed\n");
@@ -109,19 +104,19 @@ int main(int argc, char *argv[]) {
         }
 
         // Print results
-        print_discovered_devices(devices, device_count, check_services);
+        print_discovered_devices(devices, device_count, 0);  // show_services parameter no longer used
 
         // Print summary
         printf("\nDiscovery completed. Found %d device(s).\n", device_count);
-        if (check_services) {
-            int nettfservices_count = 0;
-            for (int i = 0; i < device_count; i++) {
-                if (devices[i].has_nettf_service) {
-                    nettfservices_count++;
-                }
+
+        // Count NETTF services (always checked now)
+        int nettfservices_count = 0;
+        for (int i = 0; i < device_count; i++) {
+            if (devices[i].has_nettf_service) {
+                nettfservices_count++;
             }
-            printf("%d device(s) have NETTF service running.\n", nettfservices_count);
         }
+        printf("%d device(s) have NETTF service running on port %d.\n", nettfservices_count, DEFAULT_NETTF_PORT);
 
         net_cleanup();
         return EXIT_SUCCESS;
