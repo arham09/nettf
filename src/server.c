@@ -46,6 +46,9 @@ void receive_file(int port) {
         exit(EXIT_FAILURE);            // Cannot continue without a valid socket
     }
 
+    // Optimize server socket for high-speed transfers
+    optimize_socket(server_socket);
+
     // Step 3: Enable address reuse to prevent "address already in use" errors
     // This is useful when restarting the server quickly
     int opt = 1;                       // Boolean true for enabling option
@@ -104,6 +107,9 @@ void receive_file(int port) {
             perror("accept");              // Print system error for accept failure
             continue;                     // Continue accepting other connections
         }
+
+        // Optimize client socket for high-speed transfers
+        optimize_socket(client_socket);
 
         // Convert client IP address to string for display
         char client_ip[INET_ADDRSTRLEN];   // Buffer for IP address string (IPv4 max 15 chars + null)

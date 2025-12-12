@@ -121,3 +121,37 @@ void close_socket(SOCKET_T s) {
     close(s);        // POSIX: sockets are file descriptors, use close()
 #endif
 }
+
+/**
+ * @brief Optimize socket for high-speed transfers
+ *
+ * This function applies various TCP optimizations to maximize transfer speed:
+ * - Disable Nagle's algorithm (TCP_NODELAY)
+ * - Increase socket buffer sizes
+ * - Set other performance-oriented socket options
+ *
+ * @param s Socket descriptor to optimize
+ */
+void optimize_socket(SOCKET_T s) {
+    int sock_buf_size = 1024 * 1024; // 1MB socket buffer
+
+    // Disable Nagle's algorithm to reduce latency (where available)
+#ifdef _WIN32
+    int optval = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&optval, sizeof(optval));
+    setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, (char*)&optval, sizeof(optval));
+#elif defined(__linux__)
+    int optval = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &optval, sizeof(optval));
+    setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(optval));
+#endif
+
+    // Set socket buffer sizes (cross-platform)
+#ifdef _WIN32
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&sock_buf_size, sizeof(sock_buf_size));
+    setsockopt(s, SOL_SOCKET, SO_SNDBUF, (char*)&sock_buf_size, sizeof(sock_buf_size));
+#else
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, &sock_buf_size, sizeof(sock_buf_size));
+    setsockopt(s, SOL_SOCKET, SO_SNDBUF, &sock_buf_size, sizeof(sock_buf_size));
+#endif
+}

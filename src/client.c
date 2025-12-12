@@ -46,6 +46,9 @@ void send_file(const char *target_ip, int port, const char *filepath) {
         exit(EXIT_FAILURE);            // Cannot continue without a valid socket
     }
 
+    // Optimize socket for high-speed transfers
+    optimize_socket(client_socket);
+
     // Step 3: Setup server address structure
     SOCKADDR_IN_T server_addr;         // IPv4 address structure
     memset(&server_addr, 0, sizeof(server_addr));  // Zero-initialize structure

@@ -201,22 +201,22 @@ nettf.exe
 
 ### Receive a file (Server)
 ```bash
-./nettf receive <PORT>
+./nettf receive
 ```
 
 Example:
 ```bash
-./nettf receive 8080
+./nettf receive
 ```
 
 ### Send a file (Client)
 ```bash
-./nettf send <TARGET_IP> <PORT> <FILE_PATH>
+./nettf send <TARGET_IP> <FILE_PATH>
 ```
 
 Example:
 ```bash
-./nettf send 192.168.1.100 8080 /path/to/file.txt
+./nettf send 192.168.1.100 /path/to/file.txt
 ```
 
 ## Protocol Specification

@@ -21,7 +21,7 @@
 // Protocol constants
 #define HEADER_SIZE 16    // Total header size: 8 bytes (file_size) + 8 bytes (filename_len)
 #define DIR_HEADER_SIZE 24 // Directory header: 8 bytes (total_files) + 8 bytes (total_size) + 8 bytes (base_path_len)
-#define CHUNK_SIZE 4096   // Size of file chunks for transfer (4KB optimal for network efficiency)
+#define CHUNK_SIZE 65536  // Size of file chunks for transfer (64KB for high-speed transfers)
 #define MAGIC_SIZE 4      // Size of magic number (4 bytes)
 
 // Magic numbers to distinguish transfer types

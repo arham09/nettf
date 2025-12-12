@@ -58,5 +58,6 @@
 void net_init(void);      // Initialize network subsystem (WSAStartup on Windows)
 void net_cleanup(void);   // Clean up network subsystem (WSACleanup on Windows)
 void close_socket(SOCKET_T s);  // Close socket platform-independently
+void optimize_socket(SOCKET_T s);  // Optimize socket for high-speed transfers
 
 #endif // PLATFORM_H
