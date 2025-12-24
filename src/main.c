@@ -14,7 +14,7 @@
 #include <getopt.h>     // Not used but included for potential future CLI options
 
 // Forward declarations for functions implemented in other modules
-void send_file(const char *target_ip, int port, const char *filepath);
+void send_file(const char *target_ip, int port, const char *filepath, const char *target_dir);
 void receive_file(int port);
 
 /**
@@ -29,14 +29,16 @@ void print_usage(const char *program_name) {
     printf("Usage:\n");
     printf("  %s discover [--timeout <ms>]\n", program_name);                     // Discovery mode
     printf("  %s receive\n", program_name);                                         // Receiver mode
-    printf("  %s send <TARGET_IP> <FILE_OR_DIR_PATH>\n", program_name);           // Sender mode
+    printf("  %s send <TARGET_IP> <FILE_OR_DIR_PATH> [TARGET_DIR]\n", program_name); // Sender mode
     printf("\nOptions:\n");
     printf("  --timeout <ms> Set timeout for network operations (default: 1000ms)\n");
     printf("\nExamples:\n");
     printf("  %s discover\n", program_name);                                       // Discovery with port 9876 check
     printf("  %s receive\n", program_name);                                        // Receiver example
-    printf("  %s send 192.168.1.100 /path/to/file.txt\n", program_name);          // File transfer example
-    printf("  %s send 192.168.1.100 /path/to/directory/\n", program_name);        // Directory transfer example
+    printf("  %s send <TARGET_IP> /path/to/file.txt\n", program_name);            // File transfer example
+    printf("  %s send <TARGET_IP> /path/to/file.txt downloads/\n", program_name);  // File with target dir
+    printf("  %s send <TARGET_IP> /path/to/directory/\n", program_name);          // Directory transfer example
+    printf("  %s send <TARGET_IP> /path/to/directory/ backups/\n", program_name);  // Directory with target dir
     printf("\nNote: All transfers use port %d by default.\n", DEFAULT_NETTF_PORT);
 }
 
@@ -141,18 +143,24 @@ int main(int argc, char *argv[]) {
     }
     // Parse command: "send" mode
     else if (strcmp(argv[1], "send") == 0) {
-        // Send mode requires exactly 4 arguments: program send ip filepath
-        if (argc != 4) {
+        // Send mode requires 4 or 5 arguments: program send ip filepath [target_dir]
+        if (argc < 4 || argc > 5) {
             print_usage(argv[0]);  // Show correct usage
             return EXIT_FAILURE;
         }
 
         // Extract command-line arguments
-        const char *target_ip = argv[2];  // IP address of receiver
-        const char *filepath = argv[3];   // Path to file to send
+        const char *target_ip = argv[2];   // IP address of receiver
+        const char *filepath = argv[3];    // Path to file to send
+        const char *target_dir = NULL;     // Target directory (optional)
+
+        // Check if target directory is provided
+        if (argc == 5) {
+            target_dir = argv[4];
+        }
 
         // Start the sender (client) functionality with default port
-        send_file(target_ip, DEFAULT_NETTF_PORT, filepath);
+        send_file(target_ip, DEFAULT_NETTF_PORT, filepath, target_dir);
     }
     // Handle invalid commands
     else {

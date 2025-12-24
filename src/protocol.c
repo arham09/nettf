@@ -826,6 +826,10 @@ int detect_transfer_type(SOCKET_T s) {
         return 0;  // File transfer
     } else if (magic_host == DIR_MAGIC) {
         return 1;  // Directory transfer
+    } else if (magic_host == TARGET_FILE_MAGIC) {
+        return 2;  // File transfer with target directory
+    } else if (magic_host == TARGET_DIR_MAGIC) {
+        return 3;  // Directory transfer with target directory
     } else {
         fprintf(stderr, "Error: Unknown transfer type magic number: 0x%08X\n", magic_host);
         return -1;
@@ -947,5 +951,468 @@ int create_directory_recursive(const char *dirpath) {
         return -1;
     }
 
+    return 0;
+}
+
+/**
+ * @brief Sanitize and validate target directory path
+ *
+ * Ensures the target directory path is safe and doesn't contain malicious
+ * path traversal attempts.
+ */
+int validate_target_directory(const char *target_dir, char *sanitized_dir, size_t buffer_size) {
+    if (!target_dir || !sanitized_dir || buffer_size == 0) {
+        return -1;
+    }
+
+    // Initialize output buffer
+    sanitized_dir[0] = '\0';
+
+    // Check for empty target directory (current directory)
+    if (strlen(target_dir) == 0) {
+        return 0;
+    }
+
+    // Check for path traversal attempts
+    if (strstr(target_dir, "..") != NULL) {
+        fprintf(stderr, "Error: Path traversal detected in target directory\n");
+        return -1;
+    }
+
+    // Check for absolute paths that could be dangerous
+    if (target_dir[0] == '/') {
+        fprintf(stderr, "Error: Absolute paths not allowed in target directory\n");
+        return -1;
+    }
+
+    // Sanitize path: remove leading slashes, limit length
+    const char *clean_path = target_dir;
+    while (*clean_path == '/') clean_path++;
+
+    // Check for very long paths
+    if (strlen(clean_path) > buffer_size - 2) {
+        fprintf(stderr, "Error: Target directory path too long\n");
+        return -1;
+    }
+
+    // Copy sanitized path
+    strncpy(sanitized_dir, clean_path, buffer_size - 1);
+    sanitized_dir[strlen(sanitized_dir)] = '\0';
+
+    return 0;
+}
+
+/**
+ * @brief Send a file with target directory support
+ */
+void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char *target_dir) {
+    FILE *file = fopen(filepath, "rb");
+    if (!file) {
+        perror("fopen");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get file size
+    struct stat st;
+    if (stat(filepath, &st) != 0) {
+        perror("stat");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    uint64_t file_size = st.st_size;
+
+    // Extract filename
+    const char *filename = strrchr(filepath, '/');
+#ifdef _WIN32
+    const char *filename_win = strrchr(filepath, '\\');
+    if (filename_win > filename) filename = filename_win;
+#endif
+    if (!filename) {
+        filename = filepath;
+    } else {
+        filename++;
+    }
+
+    // Validate and sanitize target directory
+    char sanitized_target[4096] = {0};
+    if (validate_target_directory(target_dir, sanitized_target, sizeof(sanitized_target)) != 0) {
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    // Prepare enhanced header
+    uint64_t filename_len = strlen(filename);
+    uint64_t target_dir_len = strlen(sanitized_target);
+    TargetFileHeader header;
+    header.file_size = htonll(file_size);
+    header.filename_len = htonll(filename_len);
+    header.target_dir_len = htonll(target_dir_len);
+
+    // Send magic number
+    uint32_t magic = htonl(TARGET_FILE_MAGIC);
+    if (send_all(s, &magic, sizeof(magic)) != 0) {
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    // Send header
+    if (send_all(s, &header, sizeof(header)) != 0) {
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    // Send filename
+    if (send_all(s, filename, filename_len) != 0) {
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    // Send target directory (if specified)
+    if (target_dir_len > 0) {
+        if (send_all(s, sanitized_target, target_dir_len) != 0) {
+            fclose(file);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Send file content in chunks
+    char buffer[CHUNK_SIZE];
+    size_t bytes_read;
+    uint64_t total_sent = 0;
+    time_t start_time = time(NULL);
+
+    printf("Sending file: %s", filename);
+    if (target_dir_len > 0) {
+        printf(" -> %s/", sanitized_target);
+    }
+    printf(" (%s)\n", file_size > 1024*1024 ? "large file" : "small file");
+
+    while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
+        if (send_all(s, buffer, bytes_read) != 0) {
+            fclose(file);
+            exit(EXIT_FAILURE);
+        }
+        total_sent += bytes_read;
+
+        // Progress display
+        if (file_size > 1024*1024) { // Only show progress for large files
+            double percent = (double)total_sent / file_size * 100.0;
+            time_t elapsed = time(NULL) - start_time;
+            double speed = elapsed > 0 ? (double)total_sent / (1024.0 * 1024.0) / elapsed : 0;
+
+            printf("\rProgress: %.1f%%", percent);
+            if (speed > 0) {
+                printf(" (%.1f MB/s)", speed);
+            }
+            fflush(stdout);
+        }
+    }
+
+    fclose(file);
+    printf("\nFile sent successfully!\n");
+}
+
+/**
+ * @brief Send a directory with target directory support
+ */
+void send_directory_with_target_protocol(SOCKET_T s, const char *dirpath, const char *target_dir) {
+    // Check if path is a directory
+    struct stat st;
+    if (stat(dirpath, &st) != 0) {
+        perror("stat");
+        exit(EXIT_FAILURE);
+    }
+
+    if (!S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "Error: %s is not a directory\n", dirpath);
+        exit(EXIT_FAILURE);
+    }
+
+    // Validate and sanitize target directory
+    char sanitized_target[4096] = {0};
+    if (validate_target_directory(target_dir, sanitized_target, sizeof(sanitized_target)) != 0) {
+        exit(EXIT_FAILURE);
+    }
+
+    // Count files and calculate total size
+    uint64_t total_files = 0, total_size = 0;
+    if (count_directory_files(dirpath, &total_files, &total_size) != 0) {
+        fprintf(stderr, "Error: Failed to analyze directory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Extract directory name
+    const char *dir_name = strrchr(dirpath, '/');
+#ifdef _WIN32
+    const char *dir_name_win = strrchr(dirpath, '\\');
+    if (dir_name_win > dir_name) dir_name = dir_name_win;
+#endif
+    if (!dir_name) {
+        dir_name = dirpath;
+    } else {
+        dir_name++;
+    }
+
+    // Prepare enhanced directory header
+    uint64_t base_path_len = strlen(dir_name);
+    uint64_t target_dir_len = strlen(sanitized_target);
+    TargetDirectoryHeader header;
+    header.total_files = htonll(total_files);
+    header.total_size = htonll(total_size);
+    header.base_path_len = htonll(base_path_len);
+    header.target_dir_len = htonll(target_dir_len);
+
+    // Send magic number
+    uint32_t magic = htonl(TARGET_DIR_MAGIC);
+    if (send_all(s, &magic, sizeof(magic)) != 0) {
+        exit(EXIT_FAILURE);
+    }
+
+    // Send header
+    if (send_all(s, &header, sizeof(header)) != 0) {
+        exit(EXIT_FAILURE);
+    }
+
+    // Send base directory name
+    if (send_all(s, dir_name, base_path_len) != 0) {
+        exit(EXIT_FAILURE);
+    }
+
+    // Send target directory (if specified)
+    if (target_dir_len > 0) {
+        if (send_all(s, sanitized_target, target_dir_len) != 0) {
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    printf("Sending directory: %s", dir_name);
+    if (target_dir_len > 0) {
+        printf(" -> %s/", sanitized_target);
+    }
+    printf(" (%lu files, %s)\n", (unsigned long)total_files, total_size > 1024*1024 ? "large" : "small");
+
+    // Send all files recursively
+    send_directory_recursive(s, dirpath, "");
+
+    printf("Directory sent successfully!\n");
+}
+
+/**
+ * @brief Receive a file with target directory support
+ */
+int recv_file_with_target_protocol(SOCKET_T s) {
+    // Receive enhanced header
+    TargetFileHeader header;
+    if (recv_all(s, &header, sizeof(header)) != 0) {
+        return -1;
+    }
+
+    // Convert from network byte order
+    uint64_t file_size = ntohll(header.file_size);
+    uint64_t filename_len = ntohll(header.filename_len);
+    uint64_t target_dir_len = ntohll(header.target_dir_len);
+
+    // Receive filename
+    char *filename = malloc(filename_len + 1);
+    if (!filename) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        return -1;
+    }
+
+    if (recv_all(s, filename, filename_len) != 0) {
+        free(filename);
+        return -1;
+    }
+    filename[filename_len] = '\0';
+
+    // Receive target directory (if specified)
+    char *target_dir = NULL;
+    if (target_dir_len > 0) {
+        target_dir = malloc(target_dir_len + 1);
+        if (!target_dir) {
+            fprintf(stderr, "Error: Memory allocation failed\n");
+            free(filename);
+            return -1;
+        }
+
+        if (recv_all(s, target_dir, target_dir_len) != 0) {
+            free(filename);
+            free(target_dir);
+            return -1;
+        }
+        target_dir[target_dir_len] = '\0';
+    }
+
+    // Create target directory if specified
+    char full_path[4096];
+    if (target_dir && strlen(target_dir) > 0) {
+        if (create_directory_recursive(target_dir) != 0) {
+            free(filename);
+            if (target_dir) free(target_dir);
+            return -1;
+        }
+        snprintf(full_path, sizeof(full_path), "%s/%s", target_dir, filename);
+    } else {
+        strncpy(full_path, filename, sizeof(full_path) - 1);
+        full_path[sizeof(full_path) - 1] = '\0';
+    }
+
+    printf("Receiving file: %s", filename);
+    if (target_dir && strlen(target_dir) > 0) {
+        printf(" -> %s/", target_dir);
+    }
+    printf(" (%s)\n", file_size > 1024*1024 ? "large file" : "small file");
+
+    // Create and write file
+    FILE *file = fopen(full_path, "wb");
+    if (!file) {
+        perror("fopen");
+        free(filename);
+        if (target_dir) free(target_dir);
+        return -1;
+    }
+
+    // Receive file content
+    char buffer[CHUNK_SIZE];
+    uint64_t total_received = 0;
+    time_t start_time = time(NULL);
+
+    while (total_received < file_size) {
+        size_t to_receive = file_size - total_received;
+        if (to_receive > CHUNK_SIZE) {
+            to_receive = CHUNK_SIZE;
+        }
+
+        ssize_t received = recv(s, buffer, to_receive, 0);
+        if (received <= 0) {
+            fprintf(stderr, "Error: Connection closed while receiving file\n");
+            fclose(file);
+            free(filename);
+            if (target_dir) free(target_dir);
+            return -1;
+        }
+
+        if (fwrite(buffer, 1, received, file) != received) {
+            perror("fwrite");
+            fclose(file);
+            free(filename);
+            if (target_dir) free(target_dir);
+            return -1;
+        }
+
+        total_received += received;
+
+        // Progress display for large files
+        if (file_size > 1024*1024) {
+            double percent = (double)total_received / file_size * 100.0;
+            time_t elapsed = time(NULL) - start_time;
+            double speed = elapsed > 0 ? (double)total_received / (1024.0 * 1024.0) / elapsed : 0;
+
+            printf("\rProgress: %.1f%%", percent);
+            if (speed > 0) {
+                printf(" (%.1f MB/s)", speed);
+            }
+            fflush(stdout);
+        }
+    }
+
+    fclose(file);
+    printf("\nFile received successfully: %s\n", full_path);
+
+    free(filename);
+    if (target_dir) free(target_dir);
+    return 0;
+}
+
+/**
+ * @brief Receive a directory with target directory support
+ */
+int recv_directory_with_target_protocol(SOCKET_T s) {
+    // Receive enhanced directory header
+    TargetDirectoryHeader header;
+    if (recv_all(s, &header, sizeof(header)) != 0) {
+        return -1;
+    }
+
+    // Convert from network byte order
+    uint64_t total_files = ntohll(header.total_files);
+    uint64_t total_size = ntohll(header.total_size);
+    uint64_t base_path_len = ntohll(header.base_path_len);
+    uint64_t target_dir_len = ntohll(header.target_dir_len);
+
+    // Receive base directory name
+    char *base_dir = malloc(base_path_len + 1);
+    if (!base_dir) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        return -1;
+    }
+
+    if (recv_all(s, base_dir, base_path_len) != 0) {
+        free(base_dir);
+        return -1;
+    }
+    base_dir[base_path_len] = '\0';
+
+    // Receive target directory (if specified)
+    char *target_dir = NULL;
+    if (target_dir_len > 0) {
+        target_dir = malloc(target_dir_len + 1);
+        if (!target_dir) {
+            fprintf(stderr, "Error: Memory allocation failed\n");
+            free(base_dir);
+            return -1;
+        }
+
+        if (recv_all(s, target_dir, target_dir_len) != 0) {
+            free(base_dir);
+            free(target_dir);
+            return -1;
+        }
+        target_dir[target_dir_len] = '\0';
+    }
+
+    // Create full target path
+    char full_target_path[4096];
+    if (target_dir && strlen(target_dir) > 0) {
+        if (create_directory_recursive(target_dir) != 0) {
+            free(base_dir);
+            if (target_dir) free(target_dir);
+            return -1;
+        }
+        snprintf(full_target_path, sizeof(full_target_path), "%s/%s", target_dir, base_dir);
+    } else {
+        strncpy(full_target_path, base_dir, sizeof(full_target_path) - 1);
+        full_target_path[sizeof(full_target_path) - 1] = '\0';
+    }
+
+    printf("Receiving directory: %s", base_dir);
+    if (target_dir && strlen(target_dir) > 0) {
+        printf(" -> %s/", target_dir);
+    }
+    printf(" (%lu files)\n", (unsigned long)total_files);
+
+    // Create target directory structure
+    if (create_directory_recursive(full_target_path) != 0) {
+        free(base_dir);
+        if (target_dir) free(target_dir);
+        return -1;
+    }
+
+    // Receive all files
+    uint64_t files_received = 0;
+    while (files_received < total_files) {
+        int result = receive_single_file_in_dir(s, full_target_path);
+        if (result != 0) {
+            free(base_dir);
+            if (target_dir) free(target_dir);
+            return -1;
+        }
+        files_received++;
+    }
+
+    printf("Directory received successfully: %s\n", full_target_path);
+
+    free(base_dir);
+    if (target_dir) free(target_dir);
     return 0;
 }

@@ -121,15 +121,27 @@ void receive_file(int port) {
         if (transfer_type == -1) {
             fprintf(stderr, "Error detecting transfer type\n");
         } else if (transfer_type == 0) {
-            // File transfer
+            // Standard file transfer
             if (recv_file_protocol(client_socket) != 0) {
                 fprintf(stderr, "Error receiving file\n");
             }
-        } else {
-            // Directory transfer
+        } else if (transfer_type == 1) {
+            // Standard directory transfer
             if (recv_directory_protocol(client_socket) != 0) {
                 fprintf(stderr, "Error receiving directory\n");
             }
+        } else if (transfer_type == 2) {
+            // File transfer with target directory
+            if (recv_file_with_target_protocol(client_socket) != 0) {
+                fprintf(stderr, "Error receiving file with target directory\n");
+            }
+        } else if (transfer_type == 3) {
+            // Directory transfer with target directory
+            if (recv_directory_with_target_protocol(client_socket) != 0) {
+                fprintf(stderr, "Error receiving directory with target directory\n");
+            }
+        } else {
+            fprintf(stderr, "Error: Unknown transfer type %d\n", transfer_type);
         }
 
         // Close client connection but keep server running

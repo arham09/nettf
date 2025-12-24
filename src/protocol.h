@@ -21,12 +21,15 @@
 // Protocol constants
 #define HEADER_SIZE 16    // Total header size: 8 bytes (file_size) + 8 bytes (filename_len)
 #define DIR_HEADER_SIZE 24 // Directory header: 8 bytes (total_files) + 8 bytes (total_size) + 8 bytes (base_path_len)
+#define TARGET_HEADER_SIZE 32 // Enhanced header: magic + file_size + filename_len + target_dir_len
 #define CHUNK_SIZE 65536  // Size of file chunks for transfer (64KB for high-speed transfers)
 #define MAGIC_SIZE 4      // Size of magic number (4 bytes)
 
 // Magic numbers to distinguish transfer types
 #define FILE_MAGIC 0x46494C45  // "FILE" in hex
 #define DIR_MAGIC  0x44495220  // "DIR " in hex
+#define TARGET_FILE_MAGIC 0x54415247  // "TARG" in hex - File with target directory
+#define TARGET_DIR_MAGIC  0x54444952  // "TDIR" in hex - Directory with target directory
 
 /**
  * @brief Protocol header structure for file transfer metadata
@@ -55,6 +58,31 @@ typedef struct {
     uint64_t total_size;    // Total size of all files in bytes (8 bytes)
     uint64_t base_path_len; // Length of base directory path (8 bytes)
 } DirectoryHeader;
+
+/**
+ * @brief Enhanced file header structure with target directory support
+ *
+ * This structure extends the basic file header to include a target directory
+ * where the receiver should save the file.
+ */
+typedef struct {
+    uint64_t file_size;      // Size of file in bytes (8 bytes, up to 16 exabytes)
+    uint64_t filename_len;   // Length of filename in bytes (8 bytes, up to 16 exabytes)
+    uint64_t target_dir_len; // Length of target directory path in bytes (8 bytes, 0 for current directory)
+} TargetFileHeader;
+
+/**
+ * @brief Enhanced directory header structure with target directory support
+ *
+ * This structure extends the basic directory header to include a target directory
+ * where the receiver should save the entire directory structure.
+ */
+typedef struct {
+    uint64_t total_files;     // Total number of files in the directory (8 bytes)
+    uint64_t total_size;      // Total size of all files in bytes (8 bytes)
+    uint64_t base_path_len;   // Length of base directory path (8 bytes)
+    uint64_t target_dir_len;  // Length of target directory path in bytes (8 bytes, 0 for current directory)
+} TargetDirectoryHeader;
 
 // Function declarations for protocol operations
 
@@ -160,11 +188,72 @@ void send_single_file_in_dir(SOCKET_T s, const char *base_path, const char *rela
 int receive_single_file_in_dir(SOCKET_T s, const char *base_dir);
 
 /**
+ * @brief Send a file with target directory support
+ *
+ * Enhanced version of send_file_protocol that supports specifying a target
+ * directory where the receiver should save the file.
+ *
+ * @param s Socket descriptor
+ * @param filepath Path to file to send
+ * @param target_dir Target directory path on receiver (NULL for current directory)
+ * @return Does not return on error (exits with EXIT_FAILURE)
+ */
+void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char *target_dir);
+
+/**
+ * @brief Send a directory with target directory support
+ *
+ * Enhanced version of send_directory_protocol that supports specifying a target
+ * directory where the receiver should save the entire directory structure.
+ *
+ * @param s Socket descriptor
+ * @param dirpath Path to directory to send
+ * @param target_dir Target directory path on receiver (NULL for current directory)
+ * @return Does not return on error (exits with EXIT_FAILURE)
+ */
+void send_directory_with_target_protocol(SOCKET_T s, const char *dirpath, const char *target_dir);
+
+/**
+ * @brief Receive a file with target directory support
+ *
+ * Enhanced version of recv_file_protocol that handles target directory creation
+ * and saves the file to the specified location.
+ *
+ * @param s Socket descriptor
+ * @return 0 on success, -1 on error
+ */
+int recv_file_with_target_protocol(SOCKET_T s);
+
+/**
+ * @brief Receive a directory with target directory support
+ *
+ * Enhanced version of recv_directory_protocol that handles target directory
+ * creation and saves the entire directory structure to the specified location.
+ *
+ * @param s Socket descriptor
+ * @return 0 on success, -1 on error
+ */
+int recv_directory_with_target_protocol(SOCKET_T s);
+
+/**
  * @brief Detect transfer type by examining first bytes
  *
  * @param s Socket descriptor
- * @return 0 for file transfer, 1 for directory transfer, -1 on error
+ * @return 0 for file transfer, 1 for directory transfer, 2 for target file, 3 for target dir, -1 on error
  */
 int detect_transfer_type(SOCKET_T s);
+
+/**
+ * @brief Sanitize and validate target directory path
+ *
+ * Ensures the target directory path is safe and doesn't contain malicious
+ * path traversal attempts.
+ *
+ * @param target_dir Target directory path to validate
+ * @param sanitized_dir Output buffer for sanitized path
+ * @param buffer_size Size of output buffer
+ * @return 0 if valid, -1 if invalid or dangerous
+ */
+int validate_target_directory(const char *target_dir, char *sanitized_dir, size_t buffer_size);
 
 #endif // PROTOCOL_H

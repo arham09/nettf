@@ -25,12 +25,13 @@
  * The function includes comprehensive error handling at each step and ensures
  * proper cleanup of resources on both success and failure paths.
  *
- * @param target_ip IP address of the receiver (e.g., "192.168.1.100")
- * @param port Port number the receiver is listening on (e.g., 8080)
+ * @param target_ip IP address of the receiver (e.g., "192.168.1.100", "10.0.0.50", "172.16.1.200")
+ * @param port Port number the receiver is listening on (e.g., 9876)
  * @param filepath Path to the file to send
+ * @param target_dir Target directory on receiver (NULL for current directory)
  * @return Does not return on error (exits with EXIT_FAILURE)
  */
-void send_file(const char *target_ip, int port, const char *filepath) {
+void send_file(const char *target_ip, int port, const char *filepath, const char *target_dir) {
     // Step 1: Initialize network subsystem
     // On Windows, this calls WSAStartup(); on POSIX systems, this does nothing
     net_init();
@@ -85,10 +86,20 @@ void send_file(const char *target_ip, int port, const char *filepath) {
 
     if (is_dir) {
         printf("Connected! Sending directory: %s\n", filepath);
-        send_directory_protocol(client_socket, filepath);
+        if (target_dir && strlen(target_dir) > 0) {
+            printf("Target directory: %s\n", target_dir);
+            send_directory_with_target_protocol(client_socket, filepath, target_dir);
+        } else {
+            send_directory_protocol(client_socket, filepath);
+        }
     } else {
         printf("Connected! Sending file: %s\n", filepath);
-        send_file_protocol(client_socket, filepath);
+        if (target_dir && strlen(target_dir) > 0) {
+            printf("Target directory: %s\n", target_dir);
+            send_file_with_target_protocol(client_socket, filepath, target_dir);
+        } else {
+            send_file_protocol(client_socket, filepath);
+        }
     }
 
     // Step 6: Clean up resources on successful completion

@@ -359,26 +359,59 @@ int ping_sweep(const char *network, const char *netmask, NetworkDevice *devices,
 }
 
 /**
- * @brief Test specific IPs for NETTF service (faster than full ping sweep)
+ * @brief Test common IPs for NETTF service based on network type
+ *
+ * This function intelligently selects IP ranges to test based on the network class:
+ * - Class A (10.0.0.0/8): Broader range for large networks
+ * - Class B (172.16.0.0/12): Medium range for corporate networks
+ * - Class C (192.168.0.0/16): Focused range for home networks
+ * - Public networks: Conservative range to avoid network issues
+ *
+ * @param devices Array to store discovered devices
+ * @param max_devices Maximum number of devices to store
+ * @param base_network Base network address (e.g., "192.168.1", "10.0", "172.16")
+ * @param timeout_ms Ping timeout in milliseconds
+ * @return Number of devices found
  */
 int test_common_ips_for_nettf(NetworkDevice *devices, int max_devices, const char *base_network, int timeout_ms) {
     int count = 0;
 
-    printf("Testing common IPs for NETTF service on %s network...\n", base_network);
+    // Determine network type and select appropriate IP ranges to test
+    const char **common_ips = NULL;
+    int num_common = 0;
 
-    // Test common IPs that might have NETTF running
-    const char *common_ips[] = {
-        "1",     // Gateway/Router
-        "10",    // Common server
-        "63",    // User's example (192.168.5.63)
-        "100",   // Common assignment
-        "101",   // Common assignment
-        "105",   // Common assignment
-        "110",   // Common assignment
-        "200",   // Common assignment
-        "254"    // Common server
+    // Define all possible IP arrays at function scope
+    static const char *class_a_ips[] = {
+        "1", "2", "5", "10", "20", "50", "100", "101", "105", "110", "200", "254"
     };
-    int num_common = sizeof(common_ips) / sizeof(common_ips[0]);
+    static const char *class_b_ips[] = {
+        "16", "17", "18", "20", "30", "50", "100", "101", "105", "110", "200", "254"
+    };
+    static const char *class_c_ips[] = {
+        "1", "10", "50", "63", "100", "101", "105", "110", "150", "200", "254"
+    };
+    static const char *public_ips[] = {
+        "1", "10", "100", "254"
+    };
+
+    // Select IP test range based on network class
+    if (strncmp(base_network, "10.", 3) == 0) {
+        // Class A private network (10.0.0.0/8) - test broader range
+        common_ips = class_a_ips;
+        num_common = sizeof(class_a_ips) / sizeof(class_a_ips[0]);
+    } else if (strncmp(base_network, "172.", 4) == 0) {
+        // Class B private network (172.16.0.0/12) - test medium range
+        common_ips = class_b_ips;
+        num_common = sizeof(class_b_ips) / sizeof(class_b_ips[0]);
+    } else if (strncmp(base_network, "192.168.", 8) == 0) {
+        // Class C private network (192.168.0.0/16) - test focused range
+        common_ips = class_c_ips;
+        num_common = sizeof(class_c_ips) / sizeof(class_c_ips[0]);
+    } else {
+        // Public network or other - test conservative range to avoid issues
+        common_ips = public_ips;
+        num_common = sizeof(public_ips) / sizeof(public_ips[0]);
+    }
 
     for (int i = 0; i < num_common && count < max_devices; i++) {
         char test_ip[16];
@@ -433,16 +466,24 @@ int discover_network_devices(NetworkDevice *devices, int max_devices, int check_
         total_count = arp_count;
     }
 
-    // Step 4: Test common IPs for potential NETTF services (faster than full ping sweep)
+    // Step 4: Test common IPs for potential NETTF services on all active interfaces
     for (int i = 0; i < interface_count && total_count < max_devices; i++) {
-        if (interfaces[i].is_active && strstr(interfaces[i].ip_address, "192.168.") != NULL) {
+        if (interfaces[i].is_active) {
+            // Skip loopback and multicast addresses
+            if (strncmp(interfaces[i].ip_address, "127.", 4) == 0 ||
+                strncmp(interfaces[i].ip_address, "169.254", 7) == 0) {
+                continue;
+            }
+
             // Extract network part (e.g., "192.168.5" from "192.168.5.x")
-            char network_part[13];
+            char network_part[32];
             strncpy(network_part, interfaces[i].ip_address, sizeof(network_part) - 1);
             char *last_dot = strrchr(network_part, '.');
             if (last_dot) {
                 *last_dot = '\0';  // Terminate at last dot
             }
+
+            printf("Scanning %s network for additional devices...\n", network_part);
 
             int additional_count = test_common_ips_for_nettf(
                 &devices[total_count],
@@ -452,11 +493,11 @@ int discover_network_devices(NetworkDevice *devices, int max_devices, int check_
             );
 
             if (additional_count > 0) {
-                // Check for duplicates with ARP table entries
+                // Check for duplicates with existing entries
                 int unique_count = 0;
                 for (int j = total_count; j < total_count + additional_count && j < max_devices; j++) {
                     int duplicate = 0;
-                    for (int k = 0; k < arp_count; k++) {
+                    for (int k = 0; k < total_count; k++) {
                         if (strcmp(devices[j].ip_address, devices[k].ip_address) == 0) {
                             duplicate = 1;
                             break;
@@ -475,8 +516,8 @@ int discover_network_devices(NetworkDevice *devices, int max_devices, int check_
                     }
                 }
                 total_count += unique_count;
+                printf("Found %d additional device(s) on %s network\n", unique_count, network_part);
             }
-            break; // Only scan the first 192.168.x.x interface
         }
     }
 

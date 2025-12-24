@@ -58,7 +58,7 @@ int scan_arp_table(NetworkDevice *devices, int max_devices);
 /**
  * @brief Perform ping sweep on network range
  *
- * @param network Base network address (e.g., "192.168.1.0")
+ * @param network Base network address (e.g., "192.168.1.0", "10.0.0.0", "172.16.1.0")
  * @param netmask Network mask (e.g., "255.255.255.0")
  * @param devices Array to store discovered devices
  * @param max_devices Maximum number of devices to store
