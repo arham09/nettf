@@ -174,7 +174,7 @@ build_project() {
 
 # Run tests
 run_tests() {
-    echo -e "${BLUE}🧪 Running tests...${NC}"
+    echo -e "${BLUE}🧪 Running functional tests...${NC}"
 
     if [ ! -f "$TARGET_NAME" ]; then
         echo -e "${RED}❌ Executable not found. Build first.${NC}"
@@ -206,8 +206,49 @@ run_tests() {
         return 1
     fi
 
-    echo -e "${GREEN}✅ All tests passed${NC}"
+    echo -e "${GREEN}✅ All functional tests passed${NC}"
     return 0
+}
+
+# Run unit tests
+run_unit_tests() {
+    echo -e "${BLUE}🧪 Running unit tests...${NC}"
+
+    # Check if test directory exists
+    if [ ! -d "test" ]; then
+        echo -e "${YELLOW}⚠️  No test directory found. Skipping unit tests.${NC}"
+        return 0
+    fi
+
+    # Check if test Makefile exists
+    if [ ! -f "test/Makefile" ]; then
+        echo -e "${YELLOW}⚠️  No test Makefile found. Skipping unit tests.${NC}"
+        return 0
+    fi
+
+    # Build and run tests
+    cd test
+    if make clean 2>&1 | grep -q error; then
+        echo -e "${RED}❌ Unit test clean failed${NC}"
+        cd ..
+        return 1
+    fi
+
+    if make build 2>&1 | grep -q error; then
+        echo -e "${RED}❌ Unit test build failed${NC}"
+        cd ..
+        return 1
+    fi
+
+    if ./run_tests; then
+        echo -e "${GREEN}✅ Unit tests passed${NC}"
+        cd ..
+        return 0
+    else
+        echo -e "${RED}❌ Unit tests failed${NC}"
+        cd ..
+        return 1
+    fi
 }
 
 # Install the executable
@@ -298,7 +339,8 @@ show_usage() {
     echo -e "  ${CYAN}all${NC}         Clean, build, and test (default)"
     echo -e "  ${CYAN}build${NC}       Build the project"
     echo -e "  ${CYAN}clean${NC}       Clean build artifacts"
-    echo -e "  ${CYAN}test${NC}        Run tests"
+    echo -e "  ${CYAN}test${NC}        Run functional tests"
+    echo -e "  ${CYAN}unit${NC}        Run unit tests"
     echo -e "  ${CYAN}install${NC}     Install to system path"
     echo -e "  ${CYAN}uninstall${NC}   Remove from system path"
     echo -e "  ${CYAN}info${NC}        Show build information"
@@ -309,6 +351,7 @@ show_usage() {
     echo -e "  $0              # Full build process"
     echo -e "  $0 build        # Build only"
     echo -e "  $0 clean build  # Clean then build"
+    echo -e "  $0 unit         # Run unit tests"
     echo -e "  $0 install      # Install to system"
     echo ""
 }
@@ -329,6 +372,7 @@ main() {
             clean_build
             build_project || exit 1
             run_tests || exit 1
+            run_unit_tests || exit 1
             echo -e "${GREEN}🎉 Full build process completed successfully!${NC}"
             ;;
         "build")
@@ -340,6 +384,9 @@ main() {
             ;;
         "test")
             run_tests || exit 1
+            ;;
+        "unit")
+            run_unit_tests || exit 1
             ;;
         "install")
             install_executable || exit 1

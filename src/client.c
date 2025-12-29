@@ -10,6 +10,7 @@
 
 #include "platform.h"  // Cross-platform socket abstraction
 #include "protocol.h"  // File transfer protocol definitions
+#include "signals.h"   // Signal handling
 
 /**
  * @brief Send a file to a remote server

@@ -11,6 +11,7 @@
 #include "platform.h"  // Cross-platform socket abstraction
 #include "discovery.h"  // Network discovery functionality
 #include "protocol.h"   // Protocol definitions (includes DEFAULT_NETTF_PORT)
+#include "signals.h"    // Signal handling
 #include <getopt.h>     // Not used but included for potential future CLI options
 
 // Forward declarations for functions implemented in other modules
@@ -66,9 +67,13 @@ void print_usage(const char *program_name) {
  * @return EXIT_SUCCESS on successful execution, EXIT_FAILURE on error
  */
 int main(int argc, char *argv[]) {
+    // Initialize signal handlers
+    signals_init();
+
     // Validate minimum argument count (program name + command)
     if (argc < 2) {
         print_usage(argv[0]);      // Show usage information
+        signals_cleanup();
         return EXIT_FAILURE;       // Exit with error status
     }
 
@@ -82,12 +87,14 @@ int main(int argc, char *argv[]) {
                 timeout_ms = atoi(argv[i + 1]);
                 if (timeout_ms <= 0) {
                     fprintf(stderr, "Error: Timeout must be a positive number\n");
+                    signals_cleanup();
                     return EXIT_FAILURE;
                 }
                 i++;  // Skip the timeout value
             } else {
                 fprintf(stderr, "Error: Unknown option '%s'\n", argv[i]);
                 print_usage(argv[0]);
+                signals_cleanup();
                 return EXIT_FAILURE;
             }
         }
@@ -102,6 +109,7 @@ int main(int argc, char *argv[]) {
         if (device_count < 0) {
             fprintf(stderr, "Error: Network discovery failed\n");
             net_cleanup();
+            signals_cleanup();
             return EXIT_FAILURE;
         }
 
@@ -121,12 +129,14 @@ int main(int argc, char *argv[]) {
         printf("%d device(s) have NETTF service running on port %d.\n", nettfservices_count, DEFAULT_NETTF_PORT);
 
         net_cleanup();
+        signals_cleanup();
         return EXIT_SUCCESS;
     }
 
     // Validate argument count for send/receive commands
     if (argc < 2) {
         print_usage(argv[0]);
+        signals_cleanup();
         return EXIT_FAILURE;
     }
 
@@ -135,17 +145,20 @@ int main(int argc, char *argv[]) {
         // Receive mode requires exactly 2 arguments: program receive
         if (argc != 2) {
             print_usage(argv[0]);  // Show correct usage
+            signals_cleanup();
             return EXIT_FAILURE;
         }
 
         // Start the receiver (server) functionality with default port
         receive_file(DEFAULT_NETTF_PORT);
+        signals_cleanup();
     }
     // Parse command: "send" mode
     else if (strcmp(argv[1], "send") == 0) {
         // Send mode requires 4 or 5 arguments: program send ip filepath [target_dir]
         if (argc < 4 || argc > 5) {
             print_usage(argv[0]);  // Show correct usage
+            signals_cleanup();
             return EXIT_FAILURE;
         }
 
@@ -161,11 +174,13 @@ int main(int argc, char *argv[]) {
 
         // Start the sender (client) functionality with default port
         send_file(target_ip, DEFAULT_NETTF_PORT, filepath, target_dir);
+        signals_cleanup();
     }
     // Handle invalid commands
     else {
         fprintf(stderr, "Error: Invalid command '%s'\n", argv[1]);
         print_usage(argv[0]);          // Show available commands
+        signals_cleanup();
         return EXIT_FAILURE;
     }
 

@@ -10,6 +10,7 @@
 
 #include "platform.h"  // Cross-platform socket abstraction
 #include "protocol.h"  // File transfer protocol definitions
+#include "signals.h"   // Signal handling
 
 /**
  * @brief Start a server to receive files on a specific port
@@ -90,6 +91,19 @@ void receive_file(int port) {
 
     // Accept connections in a loop to handle multiple file transfers
     while (1) {
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            printf("Waiting for current transfer to complete...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit! Closing server.\n");
+            close_socket(server_socket);
+            net_cleanup();
+            exit(EXIT_FAILURE);
+        }
+
         printf("Waiting for incoming connection...\n");
 
         // Accept incoming connection

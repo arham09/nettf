@@ -10,9 +10,14 @@
 
 #define _GNU_SOURCE  // Enable strdup() on Linux systems
 #include "protocol.h"
+#include "adaptive.h"    // Adaptive chunk sizing
+#include "signals.h"     // Signal handling
 #include <errno.h>  // For error codes (perror functionality)
 #include <dirent.h> // For directory operations
 #include <string.h> // For string manipulation functions
+
+// Maximum chunk size for buffer allocation (from adaptive.h)
+#define MAX_CHUNK_BUFFER_SIZE (2 * 1024 * 1024)  // 2 MB
 
 // Define htonll/ntohll for systems that don't have them (like Linux)
 #ifndef htonll
@@ -124,6 +129,7 @@ int recv_all(SOCKET_T s, void *buf, size_t len) {
  * @return Does not return on error (exits with EXIT_FAILURE)
  */
 void send_file_protocol(SOCKET_T s, const char *filepath) {
+
     // Open file in binary read mode - "rb" is critical for preserving file integrity
     FILE *file = fopen(filepath, "rb");
     if (!file) {
@@ -158,6 +164,10 @@ void send_file_protocol(SOCKET_T s, const char *filepath) {
 
     uint64_t filename_len = strlen(filename);  // Get filename length for protocol
 
+    // Initialize adaptive chunk sizing
+    AdaptiveState adaptive;
+    adaptive_init(&adaptive, file_size);
+
     // Prepare protocol header with network byte order conversion
     FileHeader header;
     header.file_size = htonll(file_size);      // Convert 64-bit size to network byte order
@@ -182,28 +192,63 @@ void send_file_protocol(SOCKET_T s, const char *filepath) {
         exit(EXIT_FAILURE);
     }
 
+
     // Send file content in chunks with enhanced progress tracking
-    char buffer[CHUNK_SIZE];        // 4KB buffer for efficient I/O
+    char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);  // Allocate max buffer size
+    if (!buffer) {
+        perror("malloc");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
     size_t bytes_read;              // Number of bytes read from file
     uint64_t total_sent = 0;        // Track total progress
 
     // Time tracking for transfer speed calculation
     time_t start_time = time(NULL);
     time_t last_update = start_time;
+    time_t chunk_start = start_time;
 
     // Read and send file in chunks until EOF
-    while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
+    size_t chunk_size = adaptive_get_chunk_size(&adaptive);
+    while ((bytes_read = fread(buffer, 1, chunk_size, file)) > 0) {
+        time_t chunk_end = time(NULL);
+        double chunk_elapsed = difftime(chunk_end, chunk_start);
+        chunk_start = chunk_end;
+
         if (send_all(s, buffer, bytes_read) != 0) {
+            free(buffer);
             fclose(file);           // Clean up on error
             exit(EXIT_FAILURE);
         }
+
+        // Update adaptive state
+        adaptive_update(&adaptive, bytes_read, chunk_elapsed);
+
         total_sent += bytes_read;   // Update progress counter
+
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit! File may be incomplete.\n");
+            free(buffer);
+            fclose(file);
+            exit(EXIT_FAILURE);
+        }
 
         // Update progress display every second
         time_t current_time = time(NULL);
         if (current_time != last_update || total_sent == file_size) {
             double elapsed_seconds = difftime(current_time, start_time);
             double speed = elapsed_seconds > 0 ? (double)total_sent / elapsed_seconds : 0;
+
+            // Get current chunk size for display
+            chunk_size = adaptive_get_chunk_size(&adaptive);
+            char chunk_str[32];
+            adaptive_format_chunk_size(chunk_size, chunk_str, sizeof(chunk_str));
 
             // Calculate estimated time remaining
             int eta_seconds = 0;
@@ -221,22 +266,27 @@ void send_file_protocol(SOCKET_T s, const char *filepath) {
 
             // Display comprehensive progress information
             printf("\r\033[K");  // Clear current line
-            printf("Progress: %.2f%% | %s/%s | Speed: %s | Elapsed: %s | ETA: %s",
+            printf("Progress: %.2f%% | %s/%s | Speed: %s | Chunk: %s | Elapsed: %s | ETA: %s",
                    (double)total_sent / file_size * 100,
-                   sent_str, total_str, speed_str, elapsed_str, eta_str);
+                   sent_str, total_str, speed_str, chunk_str, elapsed_str, eta_str);
             fflush(stdout);
 
             last_update = current_time;
         }
+
+        // Get next chunk size (may have changed)
+        chunk_size = adaptive_get_chunk_size(&adaptive);
     }
 
     // Check for file read errors (distinguish from EOF)
     if (ferror(file)) {
         perror("fread");           // Print file read error
+        free(buffer);
         fclose(file);              // Clean up on error
         exit(EXIT_FAILURE);        // Terminate on file error
     }
 
+    free(buffer);
     fclose(file);  // Clean up file handle
     printf("\nFile sent successfully!\n");  // Success message on new line
 }
@@ -285,6 +335,10 @@ int recv_file_protocol(SOCKET_T s) {
     // Display file information
     printf("Receiving file: %s (%llu bytes)\n", filename, (unsigned long long)file_size);
 
+    // Initialize adaptive chunk sizing
+    AdaptiveState adaptive;
+    adaptive_init(&adaptive, file_size);
+
     // Step 4: Create file locally in binary write mode
     // File will be created in current working directory
     FILE *file = fopen(filename, "wb");
@@ -295,43 +349,79 @@ int recv_file_protocol(SOCKET_T s) {
     }
 
     // Step 5: Receive file content in chunks with enhanced progress tracking
-    char buffer[CHUNK_SIZE];      // Buffer for receiving file chunks
+    char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);  // Allocate max buffer size
+    if (!buffer) {
+        perror("malloc");
+        fclose(file);
+        free(filename);
+        return -1;
+    }
+
     uint64_t total_received = 0;  // Track progress
 
     // Time tracking for transfer speed calculation
     time_t start_time = time(NULL);
     time_t last_update = start_time;
+    time_t chunk_start = start_time;
 
     // Keep receiving until all file bytes have been received
     while (total_received < file_size) {
         // Calculate how many bytes to receive this iteration
+        size_t chunk_size = adaptive_get_chunk_size(&adaptive);
         size_t to_receive = file_size - total_received;  // Remaining bytes
-        if (to_receive > CHUNK_SIZE) {
-            to_receive = CHUNK_SIZE;  // Limit to chunk size
+        if (to_receive > chunk_size) {
+            to_receive = chunk_size;  // Limit to chunk size
         }
 
         // Receive chunk data from network
         if (recv_all(s, buffer, to_receive) != 0) {
             fclose(file);      // Clean up file handle
+            free(buffer);
             free(filename);    // Clean up memory
             return -1;
         }
+
+        time_t chunk_end = time(NULL);
+        double chunk_elapsed = difftime(chunk_end, chunk_start);
+        chunk_start = chunk_end;
 
         // Write received data to file
         if (fwrite(buffer, 1, to_receive, file) != to_receive) {
             perror("fwrite");  // Print file write error
             fclose(file);      // Clean up file handle
+            free(buffer);
             free(filename);    // Clean up memory
             return -1;
         }
 
+        // Update adaptive state
+        adaptive_update(&adaptive, to_receive, chunk_elapsed);
+
         total_received += to_receive;  // Update progress counter
+
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit! File may be incomplete.\n");
+            fclose(file);
+            free(buffer);
+            free(filename);
+            exit(EXIT_FAILURE);
+        }
 
         // Update progress display every second
         time_t current_time = time(NULL);
         if (current_time != last_update || total_received == file_size) {
             double elapsed_seconds = difftime(current_time, start_time);
             double speed = elapsed_seconds > 0 ? (double)total_received / elapsed_seconds : 0;
+
+            // Get current chunk size for display
+            chunk_size = adaptive_get_chunk_size(&adaptive);
+            char chunk_str[32];
+            adaptive_format_chunk_size(chunk_size, chunk_str, sizeof(chunk_str));
 
             // Calculate estimated time remaining
             int eta_seconds = 0;
@@ -349,9 +439,9 @@ int recv_file_protocol(SOCKET_T s) {
 
             // Display comprehensive progress information
             printf("\r\033[K");  // Clear current line
-            printf("Progress: %.2f%% | %s/%s | Speed: %s | Elapsed: %s | ETA: %s",
+            printf("Progress: %.2f%% | %s/%s | Speed: %s | Chunk: %s | Elapsed: %s | ETA: %s",
                    (double)total_received / file_size * 100,
-                   received_str, total_str, speed_str, elapsed_str, eta_str);
+                   received_str, total_str, speed_str, chunk_str, elapsed_str, eta_str);
             fflush(stdout);
 
             last_update = current_time;
@@ -360,6 +450,7 @@ int recv_file_protocol(SOCKET_T s) {
 
     // Step 6: Clean up resources
     fclose(file);       // Close file handle
+    free(buffer);
     free(filename);     // Free allocated memory
     printf("\nFile received successfully!\n");  // Success message on new line
 
@@ -454,6 +545,10 @@ void send_single_file_in_dir(SOCKET_T s, const char *base_path, const char *rela
     uint64_t file_size = st.st_size;
     uint64_t rel_path_len = strlen(relative_path);
 
+    // Initialize adaptive chunk sizing
+    AdaptiveState adaptive;
+    adaptive_init(&adaptive, file_size);
+
     // Send file header with relative path
     FileHeader header;
     header.file_size = htonll(file_size);
@@ -471,11 +566,39 @@ void send_single_file_in_dir(SOCKET_T s, const char *base_path, const char *rela
     }
 
     // Send file content in chunks
-    char buffer[CHUNK_SIZE];
-    size_t bytes_read;
+    char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);
+    if (!buffer) {
+        perror("malloc");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
 
-    while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
+    size_t bytes_read;
+    size_t chunk_size = adaptive_get_chunk_size(&adaptive);
+    time_t chunk_start = time(NULL);
+
+    while ((bytes_read = fread(buffer, 1, chunk_size, file)) > 0) {
+        time_t chunk_end = time(NULL);
+        double chunk_elapsed = difftime(chunk_end, chunk_start);
+        chunk_start = chunk_end;
+
         if (send_all(s, buffer, bytes_read) != 0) {
+            free(buffer);
+            fclose(file);
+            exit(EXIT_FAILURE);
+        }
+
+        adaptive_update(&adaptive, bytes_read, chunk_elapsed);
+        chunk_size = adaptive_get_chunk_size(&adaptive);
+
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit!\n");
+            free(buffer);
             fclose(file);
             exit(EXIT_FAILURE);
         }
@@ -483,10 +606,12 @@ void send_single_file_in_dir(SOCKET_T s, const char *base_path, const char *rela
 
     if (ferror(file)) {
         perror("fread");
+        free(buffer);
         fclose(file);
         exit(EXIT_FAILURE);
     }
 
+    free(buffer);
     fclose(file);
 }
 
@@ -556,6 +681,7 @@ void send_directory_recursive(SOCKET_T s, const char *base_path, const char *cur
  * @brief Send a directory using the defined protocol
  */
 void send_directory_protocol(SOCKET_T s, const char *dirpath) {
+
     uint64_t total_files, total_size;
 
     // Count files and calculate total size
@@ -689,6 +815,10 @@ int receive_single_file_in_dir(SOCKET_T s, const char *base_dir) {
 
     printf("Receiving: %s\n", relative_path);
 
+    // Initialize adaptive chunk sizing
+    AdaptiveState adaptive;
+    adaptive_init(&adaptive, file_size);
+
     // Create and write file
     FILE *file = fopen(full_path, "wb");
     if (!file) {
@@ -698,16 +828,26 @@ int receive_single_file_in_dir(SOCKET_T s, const char *base_dir) {
     }
 
     // Receive file content
-    char buffer[CHUNK_SIZE];
+    char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);
+    if (!buffer) {
+        perror("malloc");
+        fclose(file);
+        free(relative_path);
+        return -1;
+    }
+
     uint64_t total_received = 0;
+    size_t chunk_size = adaptive_get_chunk_size(&adaptive);
+    time_t chunk_start = time(NULL);
 
     while (total_received < file_size) {
         size_t to_receive = file_size - total_received;
-        if (to_receive > CHUNK_SIZE) {
-            to_receive = CHUNK_SIZE;
+        if (to_receive > chunk_size) {
+            to_receive = chunk_size;
         }
 
         if (recv_all(s, buffer, to_receive) != 0) {
+            free(buffer);
             fclose(file);
             free(relative_path);
             return -1;
@@ -715,14 +855,36 @@ int receive_single_file_in_dir(SOCKET_T s, const char *base_dir) {
 
         if (fwrite(buffer, 1, to_receive, file) != to_receive) {
             perror("fwrite");
+            free(buffer);
             fclose(file);
             free(relative_path);
             return -1;
         }
 
+        time_t chunk_end = time(NULL);
+        double chunk_elapsed = difftime(chunk_end, chunk_start);
+        chunk_start = chunk_end;
+
+        adaptive_update(&adaptive, to_receive, chunk_elapsed);
+        chunk_size = adaptive_get_chunk_size(&adaptive);
+
         total_received += to_receive;
+
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit!\n");
+            free(buffer);
+            fclose(file);
+            free(relative_path);
+            exit(EXIT_FAILURE);
+        }
     }
 
+    free(buffer);
     fclose(file);
     free(relative_path);
     return 0;
@@ -1006,6 +1168,7 @@ int validate_target_directory(const char *target_dir, char *sanitized_dir, size_
  * @brief Send a file with target directory support
  */
 void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char *target_dir) {
+
     FILE *file = fopen(filepath, "rb");
     if (!file) {
         perror("fopen");
@@ -1039,6 +1202,10 @@ void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char
         fclose(file);
         exit(EXIT_FAILURE);
     }
+
+    // Initialize adaptive chunk sizing
+    AdaptiveState adaptive;
+    adaptive_init(&adaptive, file_size);
 
     // Prepare enhanced header
     uint64_t filename_len = strlen(filename);
@@ -1076,10 +1243,18 @@ void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char
     }
 
     // Send file content in chunks
-    char buffer[CHUNK_SIZE];
+    char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);
+    if (!buffer) {
+        perror("malloc");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
     size_t bytes_read;
     uint64_t total_sent = 0;
     time_t start_time = time(NULL);
+    size_t chunk_size = adaptive_get_chunk_size(&adaptive);
+    time_t chunk_start = start_time;
 
     printf("Sending file: %s", filename);
     if (target_dir_len > 0) {
@@ -1087,12 +1262,32 @@ void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char
     }
     printf(" (%s)\n", file_size > 1024*1024 ? "large file" : "small file");
 
-    while ((bytes_read = fread(buffer, 1, CHUNK_SIZE, file)) > 0) {
+    while ((bytes_read = fread(buffer, 1, chunk_size, file)) > 0) {
+        time_t chunk_end = time(NULL);
+        double chunk_elapsed = difftime(chunk_end, chunk_start);
+        chunk_start = chunk_end;
+
         if (send_all(s, buffer, bytes_read) != 0) {
+            free(buffer);
             fclose(file);
             exit(EXIT_FAILURE);
         }
+
+        adaptive_update(&adaptive, bytes_read, chunk_elapsed);
+        chunk_size = adaptive_get_chunk_size(&adaptive);
         total_sent += bytes_read;
+
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit!\n");
+            free(buffer);
+            fclose(file);
+            exit(EXIT_FAILURE);
+        }
 
         // Progress display
         if (file_size > 1024*1024) { // Only show progress for large files
@@ -1108,6 +1303,14 @@ void send_file_with_target_protocol(SOCKET_T s, const char *filepath, const char
         }
     }
 
+    if (ferror(file)) {
+        perror("fread");
+        free(buffer);
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    free(buffer);
     fclose(file);
     printf("\nFile sent successfully!\n");
 }
@@ -1263,6 +1466,10 @@ int recv_file_with_target_protocol(SOCKET_T s) {
     }
     printf(" (%s)\n", file_size > 1024*1024 ? "large file" : "small file");
 
+    // Initialize adaptive chunk sizing
+    AdaptiveState adaptive;
+    adaptive_init(&adaptive, file_size);
+
     // Create and write file
     FILE *file = fopen(full_path, "wb");
     if (!file) {
@@ -1273,34 +1480,66 @@ int recv_file_with_target_protocol(SOCKET_T s) {
     }
 
     // Receive file content
-    char buffer[CHUNK_SIZE];
+    char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);
+    if (!buffer) {
+        perror("malloc");
+        fclose(file);
+        free(filename);
+        if (target_dir) free(target_dir);
+        return -1;
+    }
+
     uint64_t total_received = 0;
     time_t start_time = time(NULL);
+    size_t chunk_size = adaptive_get_chunk_size(&adaptive);
+    time_t chunk_start = start_time;
 
     while (total_received < file_size) {
         size_t to_receive = file_size - total_received;
-        if (to_receive > CHUNK_SIZE) {
-            to_receive = CHUNK_SIZE;
+        if (to_receive > chunk_size) {
+            to_receive = chunk_size;
         }
 
         ssize_t received = recv(s, buffer, to_receive, 0);
         if (received <= 0) {
             fprintf(stderr, "Error: Connection closed while receiving file\n");
+            free(buffer);
             fclose(file);
             free(filename);
             if (target_dir) free(target_dir);
             return -1;
         }
+
+        time_t chunk_end = time(NULL);
+        double chunk_elapsed = difftime(chunk_end, chunk_start);
+        chunk_start = chunk_end;
 
         if (fwrite(buffer, 1, received, file) != received) {
             perror("fwrite");
+            free(buffer);
             fclose(file);
             free(filename);
             if (target_dir) free(target_dir);
             return -1;
         }
 
+        adaptive_update(&adaptive, received, chunk_elapsed);
+        chunk_size = adaptive_get_chunk_size(&adaptive);
         total_received += received;
+
+        // Check for shutdown signal
+        int shutdown = signals_should_shutdown();
+        if (shutdown == 1) {
+            printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+            signals_acknowledge_shutdown();
+        } else if (shutdown == 2) {
+            printf("\nForced exit!\n");
+            free(buffer);
+            fclose(file);
+            free(filename);
+            if (target_dir) free(target_dir);
+            exit(EXIT_FAILURE);
+        }
 
         // Progress display for large files
         if (file_size > 1024*1024) {
@@ -1316,6 +1555,7 @@ int recv_file_with_target_protocol(SOCKET_T s) {
         }
     }
 
+    free(buffer);
     fclose(file);
     printf("\nFile received successfully: %s\n", full_path);
 

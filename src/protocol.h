@@ -22,7 +22,6 @@
 #define HEADER_SIZE 16    // Total header size: 8 bytes (file_size) + 8 bytes (filename_len)
 #define DIR_HEADER_SIZE 24 // Directory header: 8 bytes (total_files) + 8 bytes (total_size) + 8 bytes (base_path_len)
 #define TARGET_HEADER_SIZE 32 // Enhanced header: magic + file_size + filename_len + target_dir_len
-#define CHUNK_SIZE 65536  // Size of file chunks for transfer (64KB for high-speed transfers)
 #define MAGIC_SIZE 4      // Size of magic number (4 bytes)
 
 // Magic numbers to distinguish transfer types

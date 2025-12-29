@@ -4,11 +4,15 @@
 - [Platform Abstraction Layer](#platform-abstraction-layer)
 - [Enhanced Protocol Layer](#enhanced-protocol-layer)
 - [🆕 Target Directory Feature](#-target-directory-feature)
+- [🆕 Logging System](#-logging-system)
+- [🆕 Signal Handling](#signal-handling)
+- [🆕 Adaptive Chunk Sizing](#adaptive-chunk-sizing)
 - [Network Discovery System](#network-discovery-system)
 - [Client Module](#client-module)
 - [Server Module](#server-module)
 - [Main Module](#main-module)
 - [Build System](#build-system)
+- [Testing System](#testing-system)
 - [New Features in Latest Version](#new-features-in-latest-version)
 
 ---
@@ -580,6 +584,484 @@ The target directory feature maintains 100% backward compatibility:
 
 ---
 
+## 🆕 Logging System
+
+### `src/logging.h`
+
+The logging system provides comprehensive file-based logging for debugging and monitoring.
+
+```c
+typedef enum {
+    LOG_LEVEL_DEBUG,
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARN,
+    LOG_LEVEL_ERROR
+} LogLevel;
+
+// Core functions
+int log_init(void);
+void log_cleanup(void);
+void log_message(LogLevel level, const char *format, ...);
+
+// Convenience macros
+#define LOG_DEBUG(fmt, ...) log_message(LOG_LEVEL_DEBUG, fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...)  log_message(LOG_LEVEL_INFO, fmt, ##__VA_ARGS__)
+#define LOG_WARN(fmt, ...)  log_message(LOG_LEVEL_WARN, fmt, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...) log_message(LOG_LEVEL_ERROR, fmt, ##__VA_ARGS__)
+```
+
+**Design Features:**
+- **Append-only mode**: Preserves log history across sessions
+- **Thread-safe**: Uses file locking for concurrent access
+- **Safe no-op**: Logging without `log_init()` is safe (silently fails)
+- **Timestamp format**: `[YYYY-MM-DD HH:MM:SS] [LEVEL] message`
+
+### `src/logging.c`
+
+#### Initialization
+
+```c
+int log_init(void) {
+    if (g_log_file != NULL) {
+        return 0;  // Already initialized
+    }
+    g_log_file = fopen(LOG_FILE_PATH, "a");
+    if (g_log_file == NULL) {
+        return -1;
+    }
+    return 0;
+}
+```
+
+- **Purpose**: Opens log file in append mode
+- **Idempotent**: Multiple calls are safe (checks if already open)
+- **`"a"` mode**: Creates file if doesn't exist, appends if exists
+
+#### Log Message Formatting
+
+```c
+void log_message(LogLevel level, const char *format, ...) {
+    if (g_log_file == NULL) {
+        return;  // Safe no-op if not initialized
+    }
+
+    // Get timestamp
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    // Get level string
+    const char *level_str = level_to_string(level);
+
+    // Format: [TIMESTAMP] [LEVEL] message\n
+    fprintf(g_log_file, "[%s] [%s] ", timestamp, level_str);
+    vfprintf(g_log_file, format, args);
+    fprintf(g_log_file, "\n");
+    fflush(g_log_file);  // Ensure immediate write
+}
+```
+
+**Key Implementation Details:**
+- **`time()`**: Gets current Unix timestamp
+- **`localtime()`**: Converts to local timezone
+- **`strftime()`**: Formats timestamp as `YYYY-MM-DD HH:MM:SS`
+- **`vfprintf()`**: Prints va_list to file (supports variable arguments)
+- **`fflush()`**: Forces immediate write to disk
+
+#### Level Mapping
+
+```c
+static const char* level_to_string(LogLevel level) {
+    switch (level) {
+        case LOG_LEVEL_DEBUG: return "DEBUG";
+        case LOG_LEVEL_INFO:  return "INFO";
+        case LOG_LEVEL_WARN:  return "WARN";
+        case LOG_LEVEL_ERROR: return "ERROR";
+        default: return "UNKNOWN";
+    }
+}
+```
+
+### Usage Examples
+
+```c
+// In main.c
+int main(int argc, char *argv[]) {
+    log_init();
+    LOG_INFO("NETTF started with %d arguments", argc);
+
+    // In client.c
+    LOG_INFO("Connecting to %s:%d", ip, port);
+    LOG_ERROR("Connection failed: %s", strerror(errno));
+
+    // In server.c
+    LOG_INFO("Connection established from %s:%d", client_ip, client_port);
+    LOG_WARN("Shutdown requested, waiting for transfer completion");
+
+    // At cleanup
+    log_cleanup();
+}
+```
+
+### Log File Example
+
+```
+[2024-12-29 14:32:15] [INFO] NETTF started with 3 arguments
+[2024-12-29 14:32:15] [INFO] Starting receive mode on port 9876
+[2024-12-29 14:32:20] [INFO] Connection established from 192.168.1.10:54321
+[2024-12-29 14:32:20] [INFO] Receiving file: document.pdf (2.4 MB)
+[2024-12-29 14:32:20] [DEBUG] Adaptive chunk size: 64 KB
+[2024-12-29 14:32:21] [INFO] File received successfully
+[2024-12-29 14:32:25] [WARN] Shutdown requested, waiting for transfer completion
+[2024-12-29 14:32:30] [INFO] NETTF shutting down
+```
+
+---
+
+## 🆕 Signal Handling
+
+### `src/signals.h`
+
+POSIX signal handling for graceful shutdown on Ctrl+C (SIGINT).
+
+**Note**: Windows uses stub implementations only (no Ctrl+C handling).
+
+```c
+// Initialize signal handling
+int signals_init(void);
+
+// Cleanup signal handling
+void signals_cleanup(void);
+
+// Check shutdown status
+// Returns: 0 = continue, 1 = prompt user, 2 = force exit
+int signals_should_shutdown(void);
+
+// Keep shutdown flag at 1 (after prompt)
+void signals_acknowledge_shutdown(void);
+
+// Get last signal name (for debugging)
+const char* signals_get_last_signal_name(void);
+```
+
+**Design Philosophy:**
+- **First Ctrl+C**: Soft shutdown (prompt user, continue transfer)
+- **Second Ctrl+C**: Hard shutdown (force exit with cleanup)
+- **Atomic counter**: Thread-safe signal count using `stdatomic.h`
+
+### `src/signals.c`
+
+#### Signal Handler Implementation
+
+```c
+static volatile sig_atomic_t signal_count = 0;
+
+static void signal_handler(int signum) {
+    signal_count++;
+}
+```
+
+**Key Points:**
+- **`volatile sig_atomic_t`**: C standard type for signal handler safety
+  - `volatile`: Prevents compiler optimization
+  - `sig_atomic_t`: Guaranteed atomic read/write (no partial values)
+- **Handler simplicity**: Only increments counter (no complex logic)
+  - POSIX only allows async-signal-safe functions in handlers
+
+#### Signal Registration
+
+```c
+int signals_init(void) {
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;  // Restart interrupted system calls
+
+    if (sigaction(SIGINT, &sa, NULL) == -1) {
+        return -1;
+    }
+    return 0;
+}
+```
+
+**`SA_RESTART` Flag:**
+- Automatically restarts interrupted system calls
+- Prevents `read()`, `write()`, `accept()` from returning `EINTR`
+- Critical for maintaining transfer progress during signal
+
+#### Shutdown Status Logic
+
+```c
+int signals_should_shutdown(void) {
+    if (signal_count == 0) {
+        return 0;  // Continue normal operation
+    } else if (signal_count == 1) {
+        return 1;  // First Ctrl+C - prompt user
+    } else {
+        return 2;  // Second+ Ctrl+C - force exit
+    }
+}
+
+void signals_acknowledge_shutdown(void) {
+    // Keep signal_count at 1 to prevent returning to 0
+    // Allows second Ctrl+C to trigger force exit
+    if (signal_count > 0) {
+        signal_count = 1;
+    }
+}
+```
+
+### Server Integration Example
+
+```c
+// In server.c accept loop
+while (1) {
+    int shutdown = signals_should_shutdown();
+
+    if (shutdown == 1) {
+        // First Ctrl+C - prompt user
+        printf("\nShutdown requested. Press Ctrl+C again to force exit...\n");
+        signals_acknowledge_shutdown();
+        LOG_WARN("Shutdown requested, waiting for transfer completion");
+        // Continue to accept() to finish current transfer
+    } else if (shutdown == 2) {
+        // Second Ctrl+C - force exit
+        LOG_WARN("Forced exit - closing server immediately");
+        close_socket(server_socket);
+        net_cleanup();
+        exit(EXIT_SUCCESS);
+    }
+
+    // Accept new connections
+    SOCKET_T client_socket = accept(server_socket, ...);
+    // ... handle connection
+}
+```
+
+### Protocol Integration Example
+
+```c
+// In protocol.c transfer loop
+while (bytes_sent < file_size) {
+    // Check for shutdown signal
+    int shutdown = signals_should_shutdown();
+    if (shutdown == 2) {
+        LOG_WARN("Forced exit - cancelling transfer");
+        fclose(file);
+        return -1;
+    }
+
+    // Send chunk
+    size_t chunk_size = adaptive_get_chunk_size(&adaptive);
+    bytes_read = fread(buffer, 1, chunk_size, file);
+    send_all(socket, buffer, bytes_read);
+
+    // Update adaptive state
+    adaptive_update(&adaptive, bytes_read, elapsed_time);
+}
+```
+
+### Cross-Platform Considerations
+
+| Platform | Implementation | Notes |
+|----------|----------------|-------|
+| Linux | Full POSIX `sigaction` | Full signal handling |
+| macOS | Full POSIX `sigaction` | Full signal handling |
+| Windows | Stub only | No Ctrl+C handling (returns 0) |
+
+---
+
+## 🆕 Adaptive Chunk Sizing
+
+### `src/adaptive.h`
+
+Dynamic chunk size adjustment based on network conditions for optimal throughput.
+
+```c
+// Chunk size limits
+#define MIN_CHUNK_SIZE    (8 * 1024)       // 8 KB
+#define MAX_CHUNK_SIZE    (2 * 1024 * 1024)  // 2 MB
+#define INITIAL_CHUNK_SIZE (64 * 1024)     // 64 KB
+
+// Adjustment parameters
+#define ADJUSTMENT_INTERVAL 2  // Seconds between adjustments
+#define SPEED_SAMPLES      5   // Rolling window size
+
+typedef struct {
+    size_t current_chunk_size;      // Current chunk size in bytes
+    time_t last_adjustment_time;    // Last adjustment timestamp
+    uint64_t bytes_transferred;     // Total bytes transferred
+    double speed_samples[SPEED_SAMPLES];  // Speed history (bytes/sec)
+    int sample_count;               // Number of samples collected
+    uint64_t total_bytes;           // Total file size (0 if unknown)
+    uint64_t bytes_sent_or_received; // Progress tracking
+} AdaptiveState;
+
+// Core functions
+void adaptive_init(AdaptiveState *state, uint64_t total_bytes);
+size_t adaptive_get_chunk_size(AdaptiveState *state);
+void adaptive_update(AdaptiveState *state, size_t bytes_transferred, double elapsed_time);
+void adaptive_reset(AdaptiveState *state);
+double adaptive_get_current_speed(AdaptiveState *state);
+void adaptive_format_chunk_size(size_t bytes, char *buffer, size_t buffer_size);
+```
+
+### `src/adaptive.c`
+
+#### Initialization
+
+```c
+void adaptive_init(AdaptiveState *state, uint64_t total_bytes) {
+    state->current_chunk_size = INITIAL_CHUNK_SIZE;
+    state->last_adjustment_time = time(NULL);
+    state->bytes_transferred = 0;
+    state->sample_count = 0;
+    state->total_bytes = total_bytes;
+    state->bytes_sent_or_received = 0;
+
+    for (int i = 0; i < SPEED_SAMPLES; i++) {
+        state->speed_samples[i] = 0.0;
+    }
+}
+```
+
+**Design Rationale:**
+- **Initial 64KB**: Balanced starting point (not too small, not too large)
+- **Zero samples**: No speed data yet, starts with default
+- **Time zero**: Resets adjustment timer
+
+#### Update Cycle
+
+```c
+void adaptive_update(AdaptiveState *state, size_t bytes_transferred, double elapsed_time) {
+    state->bytes_transferred += bytes_transferred;
+    state->bytes_sent_or_received += bytes_transferred;
+
+    // Calculate speed for this chunk
+    double speed = bytes_transferred / elapsed_time;
+
+    // Add to rolling window
+    state->speed_samples[state->sample_count % SPEED_SAMPLES] = speed;
+    state->sample_count++;
+
+    // Check if it's time to adjust
+    time_t now = time(NULL);
+    if (now - state->last_adjustment_time >= ADJUSTMENT_INTERVAL) {
+        adjust_chunk_size(state);
+        state->last_adjustment_time = now;
+    }
+}
+```
+
+**Rolling Average Calculation:**
+```c
+static double get_average_speed(AdaptiveState *state) {
+    if (state->sample_count == 0) {
+        return 0.0;
+    }
+
+    int count = (state->sample_count < SPEED_SAMPLES) ?
+                 state->sample_count : SPEED_SAMPLES;
+
+    double sum = 0.0;
+    for (int i = 0; i < count; i++) {
+        sum += state->speed_samples[i];
+    }
+    return sum / count;
+}
+```
+
+#### Adaptation Algorithm
+
+```c
+static void adjust_chunk_size(AdaptiveState *state) {
+    double avg_speed = get_average_speed(state);
+
+    // Convert to MB/s for decision making
+    double speed_mb_per_sec = avg_speed / (1024.0 * 1024.0);
+
+    // Aggressive adaptation based on speed tiers
+    if (speed_mb_per_sec < 1.0) {
+        state->current_chunk_size = MIN_CHUNK_SIZE;  // 8 KB
+    } else if (speed_mb_per_sec < 10.0) {
+        state->current_chunk_size = 64 * 1024;      // 64 KB
+    } else if (speed_mb_per_sec < 50.0) {
+        state->current_chunk_size = 256 * 1024;     // 256 KB
+    } else if (speed_mb_per_sec < 100.0) {
+        state->current_chunk_size = 1024 * 1024;    // 1 MB
+    } else {
+        state->current_chunk_size = MAX_CHUNK_SIZE; // 2 MB
+    }
+}
+```
+
+**Adaptation Tiers (Aggressive):**
+
+| Network Speed | Chunk Size | Rationale |
+|---------------|------------|-----------|
+| < 1 MB/s | 8 KB | Minimize latency on slow connections |
+| < 10 MB/s | 64 KB | Balanced for moderate speeds |
+| < 50 MB/s | 256 KB | Higher throughput for fast networks |
+| < 100 MB/s | 1 MB | Near-optimal for very fast networks |
+| ≥ 100 MB/s | 2 MB | Maximum chunk for gigabit+ networks |
+
+#### Utility Functions
+
+```c
+void adaptive_format_chunk_size(size_t bytes, char *buffer, size_t buffer_size) {
+    if (bytes < 1024) {
+        snprintf(buffer, buffer_size, "%zu B", bytes);
+    } else if (bytes < 1024 * 1024) {
+        snprintf(buffer, buffer_size, "%.1f KB", bytes / 1024.0);
+    } else if (bytes < 1024 * 1024 * 1024) {
+        snprintf(buffer, buffer_size, "%.1f MB", bytes / (1024.0 * 1024.0));
+    } else {
+        snprintf(buffer, buffer_size, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+}
+```
+
+### Protocol Integration
+
+```c
+// In send_file_protocol()
+AdaptiveState adaptive;
+adaptive_init(&adaptive, file_size);
+
+char *buffer = malloc(MAX_CHUNK_BUFFER_SIZE);
+
+while ((bytes_read = fread(buffer, 1, adaptive_get_chunk_size(&adaptive), file)) > 0) {
+    clock_t start = clock();
+    send_all(socket, buffer, bytes_read);
+    clock_t end = clock();
+
+    double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
+    adaptive_update(&adaptive, bytes_read, elapsed);
+
+    // Display progress with chunk size
+    char chunk_str[32];
+    adaptive_format_chunk_size(adaptive.current_chunk_size, chunk_str, sizeof(chunk_str));
+    printf("\rProgress: %.2f%% [%s chunk]", progress, chunk_str);
+}
+
+free(buffer);
+```
+
+### Performance Characteristics
+
+**Benefits:**
+- **Latency optimization**: Smaller chunks on slow networks reduce perceived lag
+- **Throughput optimization**: Larger chunks on fast networks maximize bandwidth
+- **Memory efficiency**: Dynamically allocates only needed buffer size
+- **Smooth adaptation**: Rolling average prevents oscillation
+
+**Trade-offs:**
+- **Adjustment delay**: 2-second interval means response lag to speed changes
+- **Memory overhead**: Maximum 2MB buffer allocation required
+- **Complexity**: More state management than fixed chunk size
+
+---
+
 ## Network Discovery System
 
 ### `src/discovery.h`
@@ -784,6 +1266,196 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 - **`$<`**: First prerequisite (source file)
 - **`$@`**: Target name (object file)
 - **`| $(OBJDIR)`**: Order-only prerequisite (create directory first)
+
+---
+
+## 🆕 Testing System
+
+### `test/unity.h` and `test/unity.c`
+
+NETTF uses the Unity Test Framework for unit testing. Unity is a lightweight, header-only testing framework designed for embedded systems and C projects.
+
+**Unity Features:**
+- **Header-only**: Minimal integration overhead
+- **No external dependencies**: Self-contained testing
+- **Cross-platform**: Works on any C99 compiler
+- **Small footprint**: ~500 lines of code
+
+### `test/Makefile`
+
+```makefile
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -I.. -I../src
+
+# Source files for tests
+TEST_SOURCES = $(TESTDIR)/run_tests.c \
+               $(TESTDIR)/test_logging.c \
+               $(TESTDIR)/test_adaptive.c
+
+# Unity framework
+UNITY_SOURCES = $(TESTDIR)/unity.c
+
+# Module source files (needed for testing)
+MODULE_SOURCES = $(SRCDIR)/logging.c \
+                 $(SRCDIR)/adaptive.c
+
+# Build and run tests
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+```
+
+### Test Structure
+
+Each test file follows the Unity pattern:
+
+```c
+// test/test_adaptive.c
+#include "unity.h"
+#include "../src/adaptive.h"
+
+void test_adaptive_init_sets_defaults(void) {
+    AdaptiveState state;
+    adaptive_init(&state, 1024 * 1024);
+
+    TEST_ASSERT_EQUAL_size_t(INITIAL_CHUNK_SIZE, state.current_chunk_size);
+    TEST_ASSERT_EQUAL(0, state.sample_count);
+}
+
+void test_adaptive_slow_network_reduces_chunk_size(void) {
+    AdaptiveState state;
+    adaptive_init(&state, 10 * 1024 * 1024);
+
+    // Simulate slow network: ~100 KB/s
+    for (int i = 0; i < SPEED_SAMPLES; i++) {
+        adaptive_update(&state, 64 * 1024, 0.64);
+    }
+
+    // Force adjustment
+    state.last_adjustment_time = 0;
+    adaptive_update(&state, 64 * 1024, 0.64);
+
+    TEST_ASSERT_EQUAL_size_t(MIN_CHUNK_SIZE, state.current_chunk_size);
+}
+
+int test_adaptive_runner(void) {
+    UNITY_BEGIN();
+    RUN_TEST(test_adaptive_init_sets_defaults);
+    RUN_TEST(test_adaptive_slow_network_reduces_chunk_size);
+    return UNITY_END();
+}
+```
+
+### Unity Assertions
+
+| Assertion | Purpose |
+|-----------|---------|
+| `TEST_ASSERT_EQUAL(expected, actual)` | Integer equality |
+| `TEST_ASSERT_EQUAL_size_t(expected, actual)` | size_t equality |
+| `TEST_ASSERT_TRUE(condition)` | Boolean true |
+| `TEST_ASSERT_FALSE(condition)` | Boolean false |
+| `TEST_ASSERT_NOT_NULL(pointer)` | Pointer non-null |
+| `TEST_ASSERT_NULL(pointer)` | Pointer null |
+
+### Test Runners
+
+`test/run_tests.c` is the main test entry point:
+
+```c
+void setUp(void) {}
+void tearDown(void) {}
+
+int main(void) {
+    printf("======================================\n");
+    printf("NETTF Unit Test Suite\n");
+    printf("======================================\n\n");
+
+    int failures = 0;
+
+    // Run logging tests
+    printf("Running Logging Tests...\n");
+    failures += test_logging_runner();
+
+    // Run adaptive tests
+    printf("Running Adaptive Chunk Sizing Tests...\n");
+    failures += test_adaptive_runner();
+
+    // Print summary
+    if (failures == 0) {
+        printf("All tests passed!\n");
+    } else {
+        printf("%d test(s) failed!\n", failures);
+    }
+
+    return failures > 0 ? 1 : 0;
+}
+```
+
+### Running Tests
+
+```bash
+# Run unit tests via build script
+./build.sh unit
+
+# Or directly via Makefile
+cd test && make test
+
+# Clean test artifacts
+cd test && make clean
+```
+
+### Current Test Coverage
+
+**Logging Tests (`test_logging.c`):**
+- `test_log_init_creates_file` - Verifies log file creation
+- `test_log_message_writes_to_file` - Tests message writing
+- `test_log_levels` - Verifies all log levels work
+- `test_timestamp_format` - Checks timestamp format
+- `test_log_multiple_init` - Tests idempotent init
+- `test_log_without_init` - Tests safe no-op behavior
+
+**Adaptive Tests (`test_adaptive.c`):**
+- `test_adaptive_init_sets_defaults` - Initialization values
+- `test_adaptive_get_chunk_size_in_range` - Chunk size bounds
+- `test_adaptive_slow_network_reduces_chunk_size` - Slow network adaptation
+- `test_adaptive_fast_network_increases_chunk_size` - Fast network adaptation
+- `test_adaptive_moderate_speed` - Moderate speed handling
+- `test_adaptive_reset_preserves_chunk_size` - Reset behavior
+- `test_adaptive_format_chunk_size_kb` - KB formatting
+- `test_adaptive_format_chunk_size_mb` - MB formatting
+- `test_adaptive_get_current_speed_no_samples` - No samples case
+- `test_adaptive_get_current_speed_with_samples` - With samples case
+- `test_adaptive_update_increases_samples` - Sample increment
+- `test_adaptive_get_chunk_size_returns_current` - Current size getter
+- `test_adaptive_init_zero_size` - Unknown file size handling
+
+### Test Results Example
+
+```
+======================================
+NETTF Unit Test Suite
+======================================
+
+Running Logging Tests...
+--------------------------------------
+test_log_init_creates_file ... OK
+test_log_message_writes_to_file ... OK
+test_log_levels ... OK
+test_timestamp_format ... OK
+test_log_multiple_init ... OK
+test_log_without_init ... OK
+
+Running Adaptive Chunk Sizing Tests...
+--------------------------------------
+test_adaptive_init_sets_defaults ... OK
+test_adaptive_get_chunk_size_in_range ... OK
+test_adaptive_slow_network_reduces_chunk_size ... OK
+test_adaptive_fast_network_increases_chunk_size ... OK
+...
+
+======================================
+All tests passed!
+======================================
+```
 
 ---
 
@@ -1294,6 +1966,123 @@ fprintf(stderr, "Error: Absolute paths not allowed in target directory\n");
 ./nettf send 192.168.1.100 dir/     # Send directory
 ./nettf send 192.168.1.100 file.txt downloads/  # Send to target directory
 ./nettf send 192.168.1.100 project/ backup/      # Send directory to target
+```
+
+### 11. 🆕 Adaptive Chunk Sizing
+
+**Purpose**: Optimize transfer performance by dynamically adjusting chunk size based on network conditions
+
+**Key Features**:
+- **Dynamic Range**: 8KB to 2MB chunk sizes
+- **Speed-Based Adaptation**: 5 speed tiers from <1 MB/s to ≥100 MB/s
+- **Rolling Average**: 5-sample window prevents oscillation
+- **2-Second Adjustment**: Aggressive response to changing conditions
+
+**Speed Tiers**:
+- < 1 MB/s → 8 KB (minimize latency on slow networks)
+- < 10 MB/s → 64 KB (balanced for moderate speeds)
+- < 50 MB/s → 256 KB (higher throughput for fast networks)
+- < 100 MB/s → 1 MB (near-optimal for very fast networks)
+- ≥ 100 MB/s → 2 MB (maximum for gigabit+ networks)
+
+**Benefits**:
+- Reduced latency on slow connections
+- Maximum throughput on fast connections
+- Memory-efficient (dynamically allocated)
+- Smooth adaptation without oscillation
+
+### 12. 🆕 Comprehensive Logging System
+
+**Purpose**: Provide file-based logging for debugging, monitoring, and audit trails
+
+**Key Features**:
+- **File-Based**: Append-only logging to `./nettf.log`
+- **Log Levels**: DEBUG, INFO, WARN, ERROR
+- **Timestamp Format**: `[YYYY-MM-DD HH:MM:SS] [LEVEL] message`
+- **Safe No-Op**: Logging without initialization is safe (silently fails)
+- **Idempotent Init**: Multiple `log_init()` calls are safe
+
+**Usage Throughout Codebase**:
+- **main.c**: Program start/shutdown, command parsing
+- **client.c**: Connection attempts, transfer progress
+- **server.c**: Connection acceptance, transfer completion
+- **protocol.c**: File operations, transfer milestones
+
+**Example Log Output**:
+```
+[2024-12-29 14:32:15] [INFO] NETTF started with 3 arguments
+[2024-12-29 14:32:20] [INFO] Connection established from 192.168.1.10:54321
+[2024-12-29 14:32:20] [INFO] Receiving file: document.pdf (2.4 MB)
+[2024-12-29 14:32:25] [WARN] Shutdown requested, waiting for transfer completion
+[2024-12-29 14:32:30] [INFO] NETTF shutting down
+```
+
+### 13. 🆕 Graceful Signal Handling
+
+**Purpose**: Enable clean shutdown on Ctrl+C (SIGINT) with user prompts
+
+**Key Features**:
+- **First Ctrl+C**: Soft shutdown (display prompt, continue transfer)
+- **Second Ctrl+C**: Hard shutdown (force exit with cleanup)
+- **SA_RESTART Flag**: Automatically restarts interrupted system calls
+- **Atomic Counter**: Thread-safe signal count using `sig_atomic_t`
+- **POSIX Only**: Full support on Linux/macOS, stub on Windows
+
+**Implementation Details**:
+- **Handler Simplicity**: Only increments counter (POSIX requirement)
+- **Server Integration**: Check signals in accept loop
+- **Protocol Integration**: Check signals after each chunk
+- **Clean Cleanup**: Properly closes sockets, files, and resources
+
+**User Experience**:
+```bash
+$ ./nettf receive
+Listening on port 9876...
+Connection established from 192.168.1.10:54321
+Receiving file: large_file.bin (5.2 GB)
+^C
+Shutdown requested. Press Ctrl+C again to force exit...
+# Transfer continues to completion
+File received successfully!
+```
+
+### 14. 🆕 Unit Testing Framework
+
+**Purpose**: Ensure code quality and prevent regressions through automated testing
+
+**Framework Choice**: Unity Test Framework
+- **Lightweight**: Header-only, ~500 lines of code
+- **No Dependencies**: Self-contained testing
+- **Cross-Platform**: Works with any C99 compiler
+- **Simple API**: Easy-to-write tests with clear assertions
+
+**Test Coverage**:
+- **Logging Tests** (6 tests): File creation, message writing, log levels, timestamps
+- **Adaptive Tests** (13 tests): Initialization, speed tiers, chunk size bounds, formatting
+
+**Running Tests**:
+```bash
+./build.sh unit           # Run via build script
+cd test && make test      # Run directly
+```
+
+**Example Test**:
+```c
+void test_adaptive_slow_network_reduces_chunk_size(void) {
+    AdaptiveState state;
+    adaptive_init(&state, 10 * 1024 * 1024);
+
+    // Simulate slow network: ~100 KB/s
+    for (int i = 0; i < SPEED_SAMPLES; i++) {
+        adaptive_update(&state, 64 * 1024, 0.64);
+    }
+
+    // Force adjustment
+    state.last_adjustment_time = 0;
+    adaptive_update(&state, 64 * 1024, 0.64);
+
+    TEST_ASSERT_EQUAL_size_t(MIN_CHUNK_SIZE, state.current_chunk_size);
+}
 ```
 
 This documentation explains each line's purpose and the underlying concepts. The code demonstrates professional C programming practices including error handling, cross-platform compatibility, and network programming fundamentals.
